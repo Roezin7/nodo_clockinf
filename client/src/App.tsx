@@ -4,6 +4,8 @@ import { logout } from './api';
 import LoginPage from './pages/LoginPage';
 import EmployeesPage from './pages/EmployeesPage';
 import KioskPage from './pages/KioskPage';
+import DashboardPage from './pages/DashboardPage';
+import AttendancePage from './pages/AttendancePage';
 
 function Placeholder({ title }: { title: string }) {
   return (
@@ -75,9 +77,9 @@ export default function App() {
       <Route path="/login" element={<LoginPage />} />
       <Route path="/kiosk" element={<KioskPage />} />
       <Route path="/" element={<Navigate to="/dashboard" replace />} />
-      <Route path="/dashboard" element={<Shell><Placeholder title="Dashboard (hoy)" /></Shell>} />
+      <Route path="/dashboard" element={<Shell><DashboardPage /></Shell>} />
       <Route path="/employees" element={<Shell><EmployeesPage /></Shell>} />
-      <Route path="/attendance" element={<Shell><Placeholder title="Asistencia diaria" /></Shell>} />
+      <Route path="/attendance" element={<Shell><AttendancePage /></Shell>} />
       <Route path="/reports" element={<Shell><Placeholder title="Reporte semanal" /></Shell>} />
       <Route path="/settings" element={<Shell><Placeholder title="Configuración" /></Shell>} />
       <Route path="*" element={<Navigate to="/" replace />} />

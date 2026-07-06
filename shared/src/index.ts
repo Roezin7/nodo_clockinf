@@ -104,6 +104,8 @@ export interface Anomaly {
   detail: string;
 }
 
+export type DayState = 'out' | 'in' | 'meal';
+
 export interface DayCalc {
   employee_id: string;
   work_date: string;
@@ -114,7 +116,34 @@ export interface DayCalc {
   late: boolean;
   late_minutes: number;
   complete: boolean;
+  /** Estado al final de las checadas procesadas: adentro, en comida o fuera. */
+  state: DayState;
   anomalies: Anomaly[];
+}
+
+export interface DayDetailPunch {
+  id: string;
+  punch_type: PunchType;
+  punched_at: string;
+  source: string;
+  voided: boolean;
+  correction_reason: string | null;
+  area_name: string | null;
+}
+
+export interface DayDetailRow {
+  employee_id: string;
+  employee_number: number;
+  full_name: string;
+  shift_name: string | null;
+  area_name: string | null;
+  calc: DayCalc;
+  punches: DayDetailPunch[];
+}
+
+export interface AttendanceDayResponse {
+  date: string;
+  rows: DayDetailRow[];
 }
 
 export interface WeekEmployeeCalc {

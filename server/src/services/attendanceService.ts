@@ -7,7 +7,7 @@ import { query } from '../db.js';
 import { config } from '../config.js';
 import { computeDay, reconcileWeekOvertime, type EnginePunch } from './calcEngine.js';
 import { getSettings } from './settingsService.js';
-import type { DayCalc, PunchType, WeekEmployeeCalc } from '../types.js';
+import type { DayCalc, DayDetailPunch, DayDetailRow, PunchType, WeekEmployeeCalc } from '../types.js';
 
 interface PunchDbRow {
   id: string;
@@ -26,6 +26,7 @@ interface EmployeeInfo {
   hired_at: string | null;
   deactivated_at: string | null;
   shift_start: string | null;
+  shift_name: string | null;
   tolerance_minutes: number | null;
 }
 
@@ -33,7 +34,7 @@ async function fetchEmployees(): Promise<Map<string, EmployeeInfo>> {
   const rows = await query<EmployeeInfo>(
     `SELECT e.id, e.employee_number, e.full_name, e.social_security, e.active,
             e.hired_at, e.deactivated_at,
-            s.start_time AS shift_start, s.tolerance_minutes
+            s.start_time AS shift_start, s.name AS shift_name, s.tolerance_minutes
      FROM employees e
      LEFT JOIN shifts s ON s.id = e.default_shift_id`
   );
@@ -82,6 +83,85 @@ export async function computeDayAll(workDate: string): Promise<DayCalc[]> {
     );
   }
   return results;
+}
+
+export type { DayDetailPunch, DayDetailRow };
+
+/**
+ * Detalle de un día: por empleado, sus checadas (incluidas anuladas, para
+ * transparencia) y el cálculo derivado de las vigentes.
+ */
+export async function dayDetail(workDate: string): Promise<DayDetailRow[]> {
+  const [allPunches, employees, settings, assignments] = await Promise.all([
+    query<PunchDbRow & { source: string; voided: boolean; correction_reason: string | null; punch_area: string | null }>(
+      `SELECT p.id, p.employee_id, p.punch_type, p.punched_at, p.source, p.voided,
+              p.correction_reason, a.name AS punch_area,
+              (p.punched_at AT TIME ZONE $2)::date::text AS work_date
+       FROM punches p
+       LEFT JOIN areas a ON a.id = p.area_id
+       WHERE (p.punched_at AT TIME ZONE $2)::date = $1::date
+       ORDER BY p.punched_at`,
+      [workDate, config.plantTimezone]
+    ),
+    fetchEmployees(),
+    getSettings(),
+    query<{ employee_id: string; area_name: string }>(
+      `SELECT d.employee_id, a.name AS area_name
+       FROM daily_area_assignments d
+       JOIN areas a ON a.id = d.area_id
+       WHERE d.work_date = $1::date`,
+      [workDate]
+    ),
+  ]);
+
+  const areaByEmployee = new Map(assignments.map((r) => [r.employee_id, r.area_name]));
+
+  const byEmployee = new Map<string, typeof allPunches>();
+  for (const p of allPunches) {
+    const list = byEmployee.get(p.employee_id) ?? [];
+    list.push(p);
+    byEmployee.set(p.employee_id, list);
+  }
+
+  const rows: DayDetailRow[] = [];
+  for (const [employeeId, empPunches] of byEmployee) {
+    const emp = employees.get(employeeId);
+    if (!emp) continue;
+    const valid = empPunches.filter((p) => !p.voided);
+    const calc = computeDay(
+      valid.map((p) => ({ id: p.id, punch_type: p.punch_type, punched_at: p.punched_at })),
+      {
+        employeeId,
+        workDate,
+        timezone: config.plantTimezone,
+        shiftStart: emp.shift_start,
+        toleranceMinutes: emp.tolerance_minutes ?? 5,
+        duplicateWindowMinutes: settings.duplicate_window_minutes,
+      }
+    );
+    // Área del día: asignación explícita, o la de la última checada que la traiga
+    const lastPunchArea = [...valid].reverse().find((p) => p.punch_area)?.punch_area ?? null;
+    rows.push({
+      employee_id: employeeId,
+      employee_number: emp.employee_number,
+      full_name: emp.full_name,
+      shift_name: emp.shift_name,
+      area_name: areaByEmployee.get(employeeId) ?? lastPunchArea,
+      calc,
+      punches: empPunches.map((p) => ({
+        id: p.id,
+        punch_type: p.punch_type,
+        punched_at: p.punched_at.toISOString(),
+        source: p.source,
+        voided: p.voided,
+        correction_reason: p.correction_reason,
+        area_name: p.punch_area,
+      })),
+    });
+  }
+
+  rows.sort((a, b) => a.employee_number - b.employee_number);
+  return rows;
 }
 
 export interface WeekComputation {

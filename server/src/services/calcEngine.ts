@@ -174,6 +174,7 @@ export function computeDay(punches: EnginePunch[], ctx: DayContext): DayCalc {
     late,
     late_minutes: lateMinutes,
     complete: !openMealAnomaly && !openShiftAnomaly && !hasSequenceAnomaly && firstShiftIn !== null,
+    state,
     anomalies,
   };
 }
