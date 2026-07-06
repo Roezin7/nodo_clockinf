@@ -2,19 +2,12 @@ import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import type { AttendanceDayResponse, DayDetailRow } from '@clockai/shared';
 import { api } from '../api';
+import { fmtTime, useAppTimezone } from '../time';
 
 const REFRESH_MS = 30_000;
 
-function timeOf(iso: string | null): string {
-  if (!iso) return '—';
-  return new Date(iso).toLocaleTimeString('es-MX', {
-    timeZone: 'America/Mexico_City',
-    hour: '2-digit',
-    minute: '2-digit',
-  });
-}
-
 export default function DashboardPage() {
+  useAppTimezone(); // re-render si cambia la zona de la planta
   const [data, setData] = useState<AttendanceDayResponse | null>(null);
   const [updatedAt, setUpdatedAt] = useState<Date | null>(null);
 
@@ -64,7 +57,7 @@ export default function DashboardPage() {
       <div className="flex flex-wrap items-baseline gap-3">
         <h1 className="text-2xl font-bold">Hoy — {data.date}</h1>
         <span className="text-xs text-ink-soft">
-          Actualizado {updatedAt?.toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+          Actualizado {updatedAt ? fmtTime(updatedAt.toISOString()) : '—'}
           {' · '}se refresca cada 30s
         </span>
       </div>
@@ -109,7 +102,7 @@ export default function DashboardPage() {
                       {r.calc.late && (
                         <span className="rounded-full bg-bad/10 px-2 py-0.5 text-xs font-bold text-bad">Retardo</span>
                       )}
-                      <span className="tabular-nums text-ink-soft">desde {timeOf(r.calc.shift_in)}</span>
+                      <span className="tabular-nums text-ink-soft">desde {fmtTime(r.calc.shift_in)}</span>
                     </span>
                   </li>
                 ))}
@@ -131,7 +124,7 @@ export default function DashboardPage() {
                       #{r.employee_number} {r.full_name}
                     </span>
                     <span className="tabular-nums text-ink-soft">
-                      {timeOf(r.calc.shift_in)} (+{r.calc.late_minutes} min)
+                      {fmtTime(r.calc.shift_in)} (+{r.calc.late_minutes} min)
                     </span>
                   </li>
                 ))}

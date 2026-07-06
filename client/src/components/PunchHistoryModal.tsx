@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import type { Employee, Punch, PunchType } from '@clockai/shared';
 import { api } from '../api';
 import { Modal } from '../pages/EmployeesPage';
+import { fmtDateTime, useAppTimezone } from '../time';
 
 export const PUNCH_TYPE_LABELS: Record<PunchType, string> = {
   shift_in: 'Entrada',
@@ -12,17 +13,8 @@ export const PUNCH_TYPE_LABELS: Record<PunchType, string> = {
 
 type PunchWithExtras = Punch & { photo_url: string | null; area_name: string | null };
 
-export function formatLocal(iso: string): string {
-  return new Date(iso).toLocaleString('es-MX', {
-    timeZone: 'America/Mexico_City',
-    day: '2-digit',
-    month: 'short',
-    hour: '2-digit',
-    minute: '2-digit',
-  });
-}
-
 export default function PunchHistoryModal({ employee, onClose }: { employee: Employee; onClose: () => void }) {
+  useAppTimezone(); // re-render si cambia la zona de la planta
   const [punches, setPunches] = useState<PunchWithExtras[] | null>(null);
   const [photoView, setPhotoView] = useState<string | null>(null);
 
@@ -54,7 +46,7 @@ export default function PunchHistoryModal({ employee, onClose }: { employee: Emp
                     )}
                   </td>
                   <td className="py-2 pr-3 font-semibold">{PUNCH_TYPE_LABELS[p.punch_type]}</td>
-                  <td className="py-2 pr-3 tabular-nums">{formatLocal(p.punched_at)}</td>
+                  <td className="py-2 pr-3 tabular-nums">{fmtDateTime(p.punched_at)}</td>
                   <td className="py-2 pr-3 text-ink-soft">{p.area_name ?? ''}</td>
                   <td className="py-2 text-xs text-ink-soft">
                     {p.voided ? 'ANULADA' : p.source === 'manual' ? 'manual' : ''}

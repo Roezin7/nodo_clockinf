@@ -88,6 +88,9 @@ export interface PunchIngestResponse {
   employee_name: string;
   punch_type_inferred: PunchType;
   punched_at: string;
+  /** Hora local de planta ya formateada por el SERVIDOR (única fuente de verdad). */
+  punched_at_local: string;
+  timezone: string;
 }
 
 export type AnomalyType =
@@ -177,4 +180,20 @@ export interface Settings {
   photo_retention_weeks: number;
   duplicate_window_minutes: number;
   work_days: number[]; // ISO 1=lunes … 7=domingo
+  /** Zona horaria de la planta: gobierna cortes de día, retardos y TODA la presentación. */
+  timezone: string;
 }
+
+/** Zonas horarias permitidas (EE.UU. + México DF). */
+export const ALLOWED_TIMEZONES = [
+  { id: 'America/New_York', label: 'Este (New York)' },
+  { id: 'America/Chicago', label: 'Central (Chicago)' },
+  { id: 'America/Denver', label: 'Montaña (Denver)' },
+  { id: 'America/Phoenix', label: 'Arizona (Phoenix, sin DST)' },
+  { id: 'America/Los_Angeles', label: 'Pacífico (Los Angeles)' },
+  { id: 'America/Anchorage', label: 'Alaska (Anchorage)' },
+  { id: 'Pacific/Honolulu', label: 'Hawái (Honolulu)' },
+  { id: 'America/Mexico_City', label: 'Ciudad de México' },
+] as const;
+
+export type AllowedTimezone = (typeof ALLOWED_TIMEZONES)[number]['id'];

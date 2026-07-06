@@ -8,9 +8,8 @@ import { requireAuth, requireAdmin, requireKiosk } from '../middleware/auth.js';
 import { inferPunchType } from '../services/punchInference.js';
 import { lockedForSeconds, recordFailure, recordSuccess } from '../services/pinLimiter.js';
 import { getSettings } from '../services/settingsService.js';
-import { localDayBoundsUtc, workDateOf } from '../services/time.js';
+import { formatLocalTime, localDayBoundsUtc, localToUtc, workDateOf } from '../services/time.js';
 import { storage } from '../storage.js';
-import { config } from '../config.js';
 import type { MealWindow, PunchType } from '../types.js';
 
 export const punchesRouter = Router();
@@ -69,8 +68,10 @@ punchesRouter.post('/ingest', requireKiosk, async (req, res) => {
   }
   recordSuccess(body.employee_number);
 
+  const settings = await getSettings();
+  const tz = settings.timezone;
   const now = new Date();
-  const { startUtc, endUtc, workDate } = localDayBoundsUtc(now, config.plantTimezone);
+  const { startUtc, endUtc, workDate } = localDayBoundsUtc(now, tz);
 
   const lastPunch = await queryOne<{ punch_type: PunchType; punched_at: Date; id: string }>(
     `SELECT id, punch_type, punched_at FROM punches
@@ -83,7 +84,6 @@ punchesRouter.post('/ingest', requireKiosk, async (req, res) => {
   // (default 2 min) es un doble tap — se regresa la existente sin insertar.
   // Solo cuenta hacia atrás: una checada futura (corrección mal fechada) no
   // debe tragarse las checadas reales del kiosco.
-  const settings = await getSettings();
   const sinceLastMs = lastPunch ? now.getTime() - lastPunch.punched_at.getTime() : -1;
   if (lastPunch && sinceLastMs >= 0 && sinceLastMs < settings.duplicate_window_minutes * 60_000) {
     res.status(200).json({
@@ -91,6 +91,8 @@ punchesRouter.post('/ingest', requireKiosk, async (req, res) => {
       employee_name: employee.full_name,
       punch_type_inferred: lastPunch.punch_type,
       punched_at: lastPunch.punched_at.toISOString(),
+      punched_at_local: formatLocalTime(lastPunch.punched_at, tz),
+      timezone: tz,
       duplicate: true,
     });
     return;
@@ -108,7 +110,7 @@ punchesRouter.post('/ingest', requireKiosk, async (req, res) => {
       );
       mealWindows = shift?.meal_windows ?? [];
     }
-    punchType = inferPunchType(lastPunch?.punch_type ?? null, now, mealWindows, config.plantTimezone);
+    punchType = inferPunchType(lastPunch?.punch_type ?? null, now, mealWindows, tz);
   }
 
   // Área del día si ya fue asignada (la más reciente si hay varias)
@@ -131,6 +133,9 @@ punchesRouter.post('/ingest', requireKiosk, async (req, res) => {
     employee_name: employee.full_name,
     punch_type_inferred: punchType,
     punched_at: punch!.punched_at.toISOString(),
+    // El kiosco muestra ESTA hora, formateada por el servidor: nunca la del dispositivo
+    punched_at_local: formatLocalTime(punch!.punched_at, tz),
+    timezone: tz,
   });
 });
 
@@ -149,22 +154,29 @@ punchesRouter.post('/:id/photo', requireKiosk, upload.single('photo'), async (re
     res.json({ ok: true, already: true });
     return;
   }
-  const workDate = workDateOf(punch.punched_at, config.plantTimezone);
+  const workDate = workDateOf(punch.punched_at, (await getSettings()).timezone);
   const key = `punches/${workDate}/${punch.id}.jpg`;
   await storage.put(key, req.file.buffer, req.file.mimetype || 'image/jpeg');
   await query(`UPDATE punches SET photo_key = $1 WHERE id = $2`, [key, punch.id]);
   res.json({ ok: true, photo_key: key });
 });
 
-const manualSchema = z.object({
-  employee_id: z.string().uuid(),
-  punch_type: z.enum(['shift_in', 'shift_out', 'meal_out', 'meal_in']),
-  punched_at: z.string().datetime({ offset: true }),
-  area_id: z.string().uuid().nullish(),
-  reason: z.string().trim().min(3, 'La razón es obligatoria'),
-  /** Si corrige una checada existente, esta se anula en la misma operación. */
-  correction_of: z.string().uuid().nullish(),
-});
+const manualSchema = z
+  .object({
+    employee_id: z.string().uuid(),
+    punch_type: z.enum(['shift_in', 'shift_out', 'meal_out', 'meal_in']),
+    /** Instante absoluto con offset explícito… */
+    punched_at: z.string().datetime({ offset: true }).optional(),
+    /** …o hora local de planta 'YYYY-MM-DDTHH:mm' (el servidor la convierte con SU zona). */
+    punched_at_local: z.string().regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/).optional(),
+    area_id: z.string().uuid().nullish(),
+    reason: z.string().trim().min(3, 'La razón es obligatoria'),
+    /** Si corrige una checada existente, esta se anula en la misma operación. */
+    correction_of: z.string().uuid().nullish(),
+  })
+  .refine((b) => b.punched_at || b.punched_at_local, {
+    message: 'Falta punched_at o punched_at_local',
+  });
 
 /**
  * Corrección manual (solo admin). La checada original nunca se edita:
@@ -174,8 +186,12 @@ const manualSchema = z.object({
 punchesRouter.post('/manual', requireAuth, requireAdmin, async (req, res) => {
   const body = manualSchema.parse(req.body);
   const userId = req.user!.id;
+  const settings = await getSettings();
+  const punchedAt = body.punched_at_local
+    ? localToUtc(body.punched_at_local, settings.timezone)
+    : new Date(body.punched_at!);
   // Una checada fechada en el futuro rompe la inferencia y la deduplicación del kiosco
-  if (new Date(body.punched_at) > new Date()) {
+  if (punchedAt > new Date()) {
     throw badRequest('La checada no puede tener fecha/hora en el futuro');
   }
 
@@ -204,7 +220,7 @@ punchesRouter.post('/manual', requireAuth, requireAdmin, async (req, res) => {
       [
         body.employee_id,
         body.punch_type,
-        new Date(body.punched_at),
+        punchedAt,
         body.area_id ?? null,
         userId,
         body.correction_of ?? null,
@@ -256,7 +272,7 @@ punchesRouter.get('/', requireAuth, async (req, res) => {
   }
   let tzParam = '';
   if (q.from || q.to) {
-    params.push(config.plantTimezone);
+    params.push((await getSettings()).timezone);
     tzParam = `$${params.length}`;
   }
   if (q.from) {

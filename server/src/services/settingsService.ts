@@ -1,4 +1,17 @@
 import { query } from '../db.js';
+import { config } from '../config.js';
+
+/** Zonas horarias permitidas (debe coincidir con ALLOWED_TIMEZONES de @clockai/shared). */
+export const ALLOWED_TIMEZONE_IDS = [
+  'America/New_York',
+  'America/Chicago',
+  'America/Denver',
+  'America/Phoenix',
+  'America/Los_Angeles',
+  'America/Anchorage',
+  'Pacific/Honolulu',
+  'America/Mexico_City',
+] as const;
 
 export interface AppSettings {
   daily_ot_threshold_minutes: number;
@@ -9,6 +22,8 @@ export interface AppSettings {
   duplicate_window_minutes: number;
   /** Días laborables (ISO 1=lunes … 7=domingo) para contar faltas */
   work_days: number[];
+  /** Zona horaria de la planta: única fuente de verdad para cortes de día y presentación. */
+  timezone: string;
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -18,6 +33,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   photo_retention_weeks: 8,
   duplicate_window_minutes: 2,
   work_days: [1, 2, 3, 4, 5, 6],
+  timezone: config.plantTimezone,
 };
 
 let cache: { value: AppSettings; at: number } | null = null;

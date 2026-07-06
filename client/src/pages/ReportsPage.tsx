@@ -3,10 +3,7 @@ import { Link } from 'react-router-dom';
 import type { WeekReport } from '@clockai/shared';
 import { api, ApiError, getStoredAuth } from '../api';
 import { useAuth } from '../hooks/useAuth';
-
-function todayLocal(): string {
-  return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Mexico_City' }).format(new Date());
-}
+import { fmtTime, todayLocal, useAppTimezone } from '../time';
 
 function addDays(date: string, days: number): string {
   const d = new Date(`${date}T12:00:00Z`);
@@ -17,6 +14,7 @@ function addDays(date: string, days: number): string {
 const fmtHours = (min: number): string => (min / 60).toFixed(2);
 
 export default function ReportsPage() {
+  useAppTimezone(); // re-render si cambia la zona de la planta
   const user = useAuth();
   const isAdmin = user?.role === 'admin';
   const [anchor, setAnchor] = useState(todayLocal());
@@ -191,12 +189,8 @@ export default function ReportsPage() {
                               {e.days.map((d) => (
                                 <tr key={d.work_date}>
                                   <td className="py-1 pr-4 tabular-nums">{d.work_date}</td>
-                                  <td className="py-1 pr-4 tabular-nums">
-                                    {d.shift_in ? new Date(d.shift_in).toLocaleTimeString('es-MX', { timeZone: 'America/Mexico_City', hour: '2-digit', minute: '2-digit' }) : '—'}
-                                  </td>
-                                  <td className="py-1 pr-4 tabular-nums">
-                                    {d.shift_out ? new Date(d.shift_out).toLocaleTimeString('es-MX', { timeZone: 'America/Mexico_City', hour: '2-digit', minute: '2-digit' }) : '—'}
-                                  </td>
+                                  <td className="py-1 pr-4 tabular-nums">{fmtTime(d.shift_in)}</td>
+                                  <td className="py-1 pr-4 tabular-nums">{fmtTime(d.shift_out)}</td>
                                   <td className="py-1 pr-4 tabular-nums">{d.meal_minutes}m</td>
                                   <td className="py-1 pr-4 font-bold tabular-nums">{fmtHours(d.worked_minutes)}</td>
                                   <td className="py-1">

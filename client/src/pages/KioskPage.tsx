@@ -327,10 +327,9 @@ function Key({ label, onPress, muted }: { label: string; onPress: () => void; mu
 }
 
 function Confirmation({ result }: { result: PunchIngestResponse }) {
-  const time = new Date(result.punched_at).toLocaleTimeString('es-MX', {
-    hour: '2-digit',
-    minute: '2-digit',
-  });
+  // La hora la formatea el SERVIDOR en la zona de la planta (punched_at_local):
+  // el kiosco nunca usa el reloj/zona del dispositivo para mostrarla.
+  const time = result.punched_at_local;
   return (
     <div className="flex flex-1 flex-col items-center justify-center bg-ok/5 px-8 text-center">
       <div className="flex h-24 w-24 items-center justify-center rounded-full bg-ok text-5xl text-white">✓</div>

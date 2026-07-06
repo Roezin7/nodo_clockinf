@@ -23,3 +23,20 @@ export function dateBoundsUtc(workDate: string, timezone: string): { startUtc: D
     endUtc: local.endOf('day').toUTC().toJSDate(),
   };
 }
+
+/** Fecha local de hoy en la zona de la planta. */
+export function todayLocal(timezone: string): string {
+  return DateTime.now().setZone(timezone).toISODate()!;
+}
+
+/** 'HH:mm' local de planta de un instante UTC — TODA hora mostrada sale de aquí. */
+export function formatLocalTime(utc: Date, timezone: string): string {
+  return DateTime.fromJSDate(utc, { zone: timezone }).toFormat('HH:mm');
+}
+
+/** Interpreta 'YYYY-MM-DDTHH:mm' como hora local de planta y regresa el instante UTC. */
+export function localToUtc(localDateTime: string, timezone: string): Date {
+  const dt = DateTime.fromISO(localDateTime, { zone: timezone });
+  if (!dt.isValid) throw new Error(`Fecha/hora local inválida: ${localDateTime}`);
+  return dt.toUTC().toJSDate();
+}

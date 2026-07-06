@@ -4,7 +4,6 @@
  */
 import { DateTime } from 'luxon';
 import { query } from '../db.js';
-import { config } from '../config.js';
 import { computeDay, reconcileWeekOvertime, type EnginePunch } from './calcEngine.js';
 import { getSettings } from './settingsService.js';
 import type { DayCalc, DayDetailPunch, DayDetailRow, PunchType, WeekEmployeeCalc } from '../types.js';
@@ -41,7 +40,7 @@ async function fetchEmployees(): Promise<Map<string, EmployeeInfo>> {
   return new Map(rows.map((r) => [r.id, r]));
 }
 
-async function fetchPunches(fromDate: string, toDate: string): Promise<PunchDbRow[]> {
+async function fetchPunches(fromDate: string, toDate: string, timezone: string): Promise<PunchDbRow[]> {
   return query<PunchDbRow>(
     `SELECT p.id, p.employee_id, p.punch_type, p.punched_at,
             (p.punched_at AT TIME ZONE $3)::date::text AS work_date
@@ -49,16 +48,16 @@ async function fetchPunches(fromDate: string, toDate: string): Promise<PunchDbRo
      WHERE NOT p.voided
        AND (p.punched_at AT TIME ZONE $3)::date BETWEEN $1::date AND $2::date
      ORDER BY p.punched_at`,
-    [fromDate, toDate, config.plantTimezone]
+    [fromDate, toDate, timezone]
   );
 }
 
 /** Cálculo de un día local de planta para todos los empleados con checadas. */
 export async function computeDayAll(workDate: string): Promise<DayCalc[]> {
-  const [punches, employees, settings] = await Promise.all([
-    fetchPunches(workDate, workDate),
+  const settings = await getSettings();
+  const [punches, employees] = await Promise.all([
+    fetchPunches(workDate, workDate, settings.timezone),
     fetchEmployees(),
-    getSettings(),
   ]);
 
   const byEmployee = new Map<string, EnginePunch[]>();
@@ -75,7 +74,7 @@ export async function computeDayAll(workDate: string): Promise<DayCalc[]> {
       computeDay(empPunches, {
         employeeId,
         workDate,
-        timezone: config.plantTimezone,
+        timezone: settings.timezone,
         shiftStart: emp?.shift_start ?? null,
         toleranceMinutes: emp?.tolerance_minutes ?? 5,
         duplicateWindowMinutes: settings.duplicate_window_minutes,
@@ -92,7 +91,8 @@ export type { DayDetailPunch, DayDetailRow };
  * transparencia) y el cálculo derivado de las vigentes.
  */
 export async function dayDetail(workDate: string): Promise<DayDetailRow[]> {
-  const [allPunches, employees, settings, assignments] = await Promise.all([
+  const settings = await getSettings();
+  const [allPunches, employees, assignments] = await Promise.all([
     query<PunchDbRow & { source: string; voided: boolean; correction_reason: string | null; punch_area: string | null }>(
       `SELECT p.id, p.employee_id, p.punch_type, p.punched_at, p.source, p.voided,
               p.correction_reason, a.name AS punch_area,
@@ -101,10 +101,9 @@ export async function dayDetail(workDate: string): Promise<DayDetailRow[]> {
        LEFT JOIN areas a ON a.id = p.area_id
        WHERE (p.punched_at AT TIME ZONE $2)::date = $1::date
        ORDER BY p.punched_at`,
-      [workDate, config.plantTimezone]
+      [workDate, settings.timezone]
     ),
     fetchEmployees(),
-    getSettings(),
     query<{ employee_id: string; area_name: string }>(
       `SELECT d.employee_id, a.name AS area_name
        FROM daily_area_assignments d
@@ -133,7 +132,7 @@ export async function dayDetail(workDate: string): Promise<DayDetailRow[]> {
       {
         employeeId,
         workDate,
-        timezone: config.plantTimezone,
+        timezone: settings.timezone,
         shiftStart: emp.shift_start,
         toleranceMinutes: emp.tolerance_minutes ?? 5,
         duplicateWindowMinutes: settings.duplicate_window_minutes,
@@ -174,12 +173,15 @@ export interface WeekComputation {
 /** Cálculo semanal completo con reconciliación de OT y faltas. */
 export async function computeWeek(weekStart: string): Promise<WeekComputation> {
   const settings = await getSettings();
-  const start = DateTime.fromISO(weekStart, { zone: config.plantTimezone });
+  const start = DateTime.fromISO(weekStart, { zone: settings.timezone });
   const weekEnd = start.plus({ days: 6 }).toISODate()!;
-  const [punches, employees] = await Promise.all([fetchPunches(weekStart, weekEnd), fetchEmployees()]);
+  const [punches, employees] = await Promise.all([
+    fetchPunches(weekStart, weekEnd, settings.timezone),
+    fetchEmployees(),
+  ]);
 
   const dates: string[] = Array.from({ length: 7 }, (_, i) => start.plus({ days: i }).toISODate()!);
-  const today = DateTime.now().setZone(config.plantTimezone).toISODate()!;
+  const today = DateTime.now().setZone(settings.timezone).toISODate()!;
 
   // Agrupar checadas por empleado × día
   const byEmpDay = new Map<string, Map<string, EnginePunch[]>>();
@@ -214,7 +216,7 @@ export async function computeWeek(weekStart: string): Promise<WeekComputation> {
         computeDay(dayPunches, {
           employeeId,
           workDate: date,
-          timezone: config.plantTimezone,
+          timezone: settings.timezone,
           shiftStart: emp.shift_start,
           toleranceMinutes: emp.tolerance_minutes ?? 5,
           duplicateWindowMinutes: settings.duplicate_window_minutes,

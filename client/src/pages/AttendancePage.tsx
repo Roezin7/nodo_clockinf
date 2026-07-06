@@ -4,19 +4,7 @@ import { api, ApiError } from '../api';
 import { useAuth } from '../hooks/useAuth';
 import { Modal } from './EmployeesPage';
 import { PUNCH_TYPE_LABELS } from '../components/PunchHistoryModal';
-
-function todayLocal(): string {
-  return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Mexico_City' }).format(new Date());
-}
-
-function timeOf(iso: string | null): string {
-  if (!iso) return '—';
-  return new Date(iso).toLocaleTimeString('es-MX', {
-    timeZone: 'America/Mexico_City',
-    hour: '2-digit',
-    minute: '2-digit',
-  });
-}
+import { fmtTime, todayLocal, useAppTimezone } from '../time';
 
 function fmtMinutes(min: number): string {
   return `${Math.floor(min / 60)}:${String(min % 60).padStart(2, '0')}`;
@@ -29,6 +17,7 @@ interface CorrectionState {
 }
 
 export default function AttendancePage() {
+  useAppTimezone(); // re-render si cambia la zona de la planta
   const user = useAuth();
   const isAdmin = user?.role === 'admin';
   const [date, setDate] = useState(todayLocal());
@@ -100,7 +89,7 @@ export default function AttendancePage() {
                                 : 'border-line bg-surface'
                           }`}
                         >
-                          {PUNCH_TYPE_LABELS[p.punch_type]} {timeOf(p.punched_at)}
+                          {PUNCH_TYPE_LABELS[p.punch_type]} {fmtTime(p.punched_at)}
                         </span>
                       ))}
                     </div>
@@ -189,7 +178,8 @@ function CorrectionModal({
           body: JSON.stringify({
             employee_id: row.employee_id,
             punch_type: punchType,
-            punched_at: `${date}T${time}:00-06:00`,
+            // Hora LOCAL de planta: el servidor la convierte con su propia zona
+            punched_at_local: `${date}T${time}`,
             reason,
             correction_of: targetId || null,
           }),
@@ -249,7 +239,7 @@ function CorrectionModal({
                 <option value="">— No anular ninguna —</option>
                 {activePunches.map((p) => (
                   <option key={p.id} value={p.id}>
-                    {PUNCH_TYPE_LABELS[p.punch_type]} {timeOf(p.punched_at)}
+                    {PUNCH_TYPE_LABELS[p.punch_type]} {fmtTime(p.punched_at)}
                   </option>
                 ))}
               </select>
@@ -261,7 +251,7 @@ function CorrectionModal({
             <select className={inputCls} value={targetId} onChange={(e) => setTargetId(e.target.value)}>
               {activePunches.map((p) => (
                 <option key={p.id} value={p.id}>
-                  {PUNCH_TYPE_LABELS[p.punch_type]} {timeOf(p.punched_at)}
+                  {PUNCH_TYPE_LABELS[p.punch_type]} {fmtTime(p.punched_at)}
                 </option>
               ))}
             </select>

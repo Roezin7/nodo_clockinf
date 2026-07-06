@@ -7,7 +7,6 @@ import { badRequest, conflict } from '../errors.js';
 import { requireAuth, requireAdmin } from '../middleware/auth.js';
 import { computeWeek, type WeekComputation } from '../services/attendanceService.js';
 import { getSettings } from '../services/settingsService.js';
-import { config } from '../config.js';
 import type { WeekEmployeeCalc } from '../types.js';
 
 export const reportsRouter = Router();
@@ -18,7 +17,7 @@ const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 /** Normaliza cualquier fecha al inicio de su semana según settings.week_start_day. */
 async function normalizeWeekStart(date: string): Promise<string> {
   const settings = await getSettings();
-  const d = DateTime.fromISO(date, { zone: config.plantTimezone });
+  const d = DateTime.fromISO(date, { zone: settings.timezone });
   const diff = (d.weekday - settings.week_start_day + 7) % 7;
   return d.minus({ days: diff }).toISODate()!;
 }
@@ -102,9 +101,9 @@ reportsRouter.get('/weeks', async (_req, res) => {
 
 const hours = (min: number): number => Math.round((min / 60) * 100) / 100;
 
-function localTime(iso: string | null): string {
+function localTime(iso: string | null, timezone: string): string {
   if (!iso) return '';
-  return DateTime.fromISO(iso).setZone(config.plantTimezone).toFormat('HH:mm');
+  return DateTime.fromISO(iso).setZone(timezone).toFormat('HH:mm');
 }
 
 const SUMMARY_HEADERS = [
@@ -129,7 +128,7 @@ const DETAIL_HEADERS = [
   '# Empleado', 'Nombre', 'Fecha', 'Entrada', 'Salida', 'Comida (min)', 'Horas del día', 'Retardo', 'Incompleto',
 ];
 
-function detailRows(employees: WeekEmployeeCalc[]): (string | number)[][] {
+function detailRows(employees: WeekEmployeeCalc[], timezone: string): (string | number)[][] {
   const rows: (string | number)[][] = [];
   for (const e of employees) {
     for (const d of e.days) {
@@ -137,8 +136,8 @@ function detailRows(employees: WeekEmployeeCalc[]): (string | number)[][] {
         e.employee_number,
         e.full_name,
         d.work_date,
-        localTime(d.shift_in),
-        localTime(d.shift_out),
+        localTime(d.shift_in, timezone),
+        localTime(d.shift_out, timezone),
         d.meal_minutes,
         hours(d.worked_minutes),
         d.late ? `Sí (+${d.late_minutes}m)` : '',
@@ -169,13 +168,14 @@ reportsRouter.get('/week/:weekStart/export', async (req, res) => {
 
   const final = await getFinalReport(weekStart);
   const computation = final ? final.data : await computeWeek(weekStart);
+  const tz = (await getSettings()).timezone;
   const suffix = final ? '' : '-BORRADOR';
   const base = `nomina-semana-${weekStart}${suffix}`;
 
   if (format === 'csv') {
     const csv =
       sheet === 'detail'
-        ? toCsv(DETAIL_HEADERS, detailRows(computation.employees))
+        ? toCsv(DETAIL_HEADERS, detailRows(computation.employees, tz))
         : toCsv(SUMMARY_HEADERS, computation.employees.map(summaryRow));
     res
       .header('Content-Type', 'text/csv; charset=utf-8')
@@ -203,7 +203,7 @@ reportsRouter.get('/week/:weekStart/export', async (req, res) => {
 
   const ws2 = wb.addWorksheet('Detalle por día');
   ws2.addRow(DETAIL_HEADERS);
-  for (const r of detailRows(computation.employees)) ws2.addRow(r);
+  for (const r of detailRows(computation.employees, tz)) ws2.addRow(r);
   styleHeader(ws2);
 
   res

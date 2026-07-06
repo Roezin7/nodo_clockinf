@@ -1,6 +1,9 @@
+import { useEffect } from 'react';
 import { Navigate, Route, Routes, NavLink, useNavigate } from 'react-router-dom';
+import type { Settings } from '@clockai/shared';
 import { useAuth } from './hooks/useAuth';
-import { logout } from './api';
+import { api, logout } from './api';
+import { setAppTimezone } from './time';
 import LoginPage from './pages/LoginPage';
 import EmployeesPage from './pages/EmployeesPage';
 import KioskPage from './pages/KioskPage';
@@ -20,6 +23,16 @@ const NAV = [
 function Shell({ children }: { children: React.ReactNode }) {
   const user = useAuth();
   const navigate = useNavigate();
+
+  // La zona horaria de la planta gobierna TODA la presentación de horas
+  useEffect(() => {
+    if (user) {
+      void api<Settings>('/api/settings')
+        .then((s) => setAppTimezone(s.timezone))
+        .catch(() => {});
+    }
+  }, [user]);
+
   if (!user) return <Navigate to="/login" replace />;
   return (
     <div className="min-h-screen">

@@ -1,10 +1,10 @@
 import { Router } from 'express';
-import { DateTime } from 'luxon';
 import { z } from 'zod';
 import { badRequest } from '../errors.js';
 import { requireAuth, requireAdmin } from '../middleware/auth.js';
 import { dayDetail } from '../services/attendanceService.js';
-import { config } from '../config.js';
+import { getSettings } from '../services/settingsService.js';
+import { todayLocal } from '../services/time.js';
 import { query } from '../db.js';
 
 export const attendanceRouter = Router();
@@ -13,7 +13,7 @@ attendanceRouter.use(requireAuth);
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 attendanceRouter.get('/today', async (_req, res) => {
-  const today = DateTime.now().setZone(config.plantTimezone).toISODate()!;
+  const today = todayLocal((await getSettings()).timezone);
   res.json({ date: today, rows: await dayDetail(today) });
 });
 
@@ -48,7 +48,7 @@ assignmentsRouter.post('/daily', requireAdmin, async (req, res) => {
 assignmentsRouter.get('/daily', async (req, res) => {
   const date = typeof req.query.date === 'string' && DATE_RE.test(req.query.date)
     ? req.query.date
-    : DateTime.now().setZone(config.plantTimezone).toISODate()!;
+    : todayLocal((await getSettings()).timezone);
   res.json(
     await query(
       `SELECT d.id, d.employee_id, d.work_date, d.area_id, a.name AS area_name, e.full_name, e.employee_number

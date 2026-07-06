@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react';
 import type { Area, MealWindow, Settings, Shift, User } from '@clockai/shared';
+import { ALLOWED_TIMEZONES } from '@clockai/shared';
 import { api, ApiError } from '../api';
 import { useAuth } from '../hooks/useAuth';
+import { setAppTimezone } from '../time';
 
 const inputCls =
   'w-full rounded-lg border border-line bg-surface px-3 py-2 text-sm outline-none focus:border-wine-500';
@@ -53,7 +55,10 @@ function ThresholdsCard() {
     if (!settings) return;
     setError(null);
     try {
-      setSettings(await api<Settings>('/api/settings', { method: 'PATCH', body: JSON.stringify(settings) }));
+      const updated = await api<Settings>('/api/settings', { method: 'PATCH', body: JSON.stringify(settings) });
+      setSettings(updated);
+      // Toda la UI se actualiza a la nueva zona al instante
+      setAppTimezone(updated.timezone);
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
     } catch (err) {
@@ -65,6 +70,21 @@ function ThresholdsCard() {
 
   return (
     <Card title="Reglas de nómina">
+      <label className="mb-3 block">
+        <span className="mb-1 block text-sm font-semibold">Zona horaria de la planta</span>
+        <select
+          className={inputCls}
+          value={settings.timezone}
+          onChange={(e) => setSettings({ ...settings, timezone: e.target.value })}
+        >
+          {ALLOWED_TIMEZONES.map((tz) => (
+            <option key={tz.id} value={tz.id}>{tz.label} — {tz.id}</option>
+          ))}
+        </select>
+        <span className="mt-1 block text-xs text-ink-soft">
+          Gobierna los cortes de día, retardos, reportes y TODA hora mostrada (kiosco incluido).
+        </span>
+      </label>
       <div className="grid grid-cols-2 gap-3">
         <label className="block">
           <span className="mb-1 block text-sm font-semibold">OT diario después de (horas)</span>
