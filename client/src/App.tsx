@@ -6,6 +6,7 @@ import EmployeesPage from './pages/EmployeesPage';
 import KioskPage from './pages/KioskPage';
 import DashboardPage from './pages/DashboardPage';
 import AttendancePage from './pages/AttendancePage';
+import ReportsPage from './pages/ReportsPage';
 
 function Placeholder({ title }: { title: string }) {
   return (
@@ -80,7 +81,7 @@ export default function App() {
       <Route path="/dashboard" element={<Shell><DashboardPage /></Shell>} />
       <Route path="/employees" element={<Shell><EmployeesPage /></Shell>} />
       <Route path="/attendance" element={<Shell><AttendancePage /></Shell>} />
-      <Route path="/reports" element={<Shell><Placeholder title="Reporte semanal" /></Shell>} />
+      <Route path="/reports" element={<Shell><ReportsPage /></Shell>} />
       <Route path="/settings" element={<Shell><Placeholder title="Configuración" /></Shell>} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>

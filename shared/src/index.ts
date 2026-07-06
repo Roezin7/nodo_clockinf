@@ -160,6 +160,16 @@ export interface WeekEmployeeCalc {
   days: DayCalc[];
 }
 
+export interface WeekReport {
+  week_start: string;
+  week_end: string;
+  employees: WeekEmployeeCalc[];
+  anomaly_count: number;
+  status: 'draft' | 'final';
+  finalized_at?: string;
+  finalized_by?: string;
+}
+
 export interface Settings {
   daily_ot_threshold_minutes: number;
   weekly_ot_threshold_minutes: number;

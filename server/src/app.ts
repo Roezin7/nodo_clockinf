@@ -8,6 +8,7 @@ import { employeesRouter } from './routes/employees.js';
 import { shiftsRouter, areasRouter } from './routes/catalogs.js';
 import { punchesRouter } from './routes/punches.js';
 import { attendanceRouter, assignmentsRouter } from './routes/attendance.js';
+import { reportsRouter } from './routes/reports.js';
 import { storageIsLocal, LOCAL_DIR } from './storage.js';
 
 export function createApp(): express.Express {
@@ -26,6 +27,7 @@ export function createApp(): express.Express {
   app.use('/api/punches', punchesRouter);
   app.use('/api/attendance', attendanceRouter);
   app.use('/api/assignments', assignmentsRouter);
+  app.use('/api/reports', reportsRouter);
 
   // Solo dev: sirve las fotos guardadas en disco local (sin R2 configurado)
   if (storageIsLocal) {
