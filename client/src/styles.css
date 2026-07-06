@@ -1,0 +1,26 @@
+@import 'tailwindcss';
+
+/* Design system NODO: neutros cálidos + acento vino, Hanken Grotesk */
+@theme {
+  --font-sans: 'Hanken Grotesk', system-ui, sans-serif;
+
+  --color-surface: #faf8f5;
+  --color-card: #ffffff;
+  --color-ink: #2b2622;
+  --color-ink-soft: #6f6660;
+  --color-line: #e8e2da;
+
+  --color-wine-50: #fbf3f5;
+  --color-wine-100: #f5e1e7;
+  --color-wine-500: #8e2a48;
+  --color-wine-600: #7a2140;
+  --color-wine-700: #641a35;
+
+  --color-ok: #2f7d4f;
+  --color-warn: #b45309;
+  --color-bad: #b3261e;
+}
+
+body {
+  @apply bg-surface text-ink font-sans antialiased;
+}
