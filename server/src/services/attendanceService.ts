@@ -1,0 +1,183 @@
+/**
+ * Pegamento entre el log de checadas y el motor de cálculo puro.
+ * Todo se deriva de `punches` no anuladas; nada se almacena.
+ */
+import { DateTime } from 'luxon';
+import { query } from '../db.js';
+import { config } from '../config.js';
+import { computeDay, reconcileWeekOvertime, type EnginePunch } from './calcEngine.js';
+import { getSettings } from './settingsService.js';
+import type { DayCalc, PunchType, WeekEmployeeCalc } from '../types.js';
+
+interface PunchDbRow {
+  id: string;
+  employee_id: string;
+  punch_type: PunchType;
+  punched_at: Date;
+  work_date: string;
+}
+
+interface EmployeeInfo {
+  id: string;
+  employee_number: number;
+  full_name: string;
+  social_security: string | null;
+  active: boolean;
+  hired_at: string | null;
+  deactivated_at: string | null;
+  shift_start: string | null;
+  tolerance_minutes: number | null;
+}
+
+async function fetchEmployees(): Promise<Map<string, EmployeeInfo>> {
+  const rows = await query<EmployeeInfo>(
+    `SELECT e.id, e.employee_number, e.full_name, e.social_security, e.active,
+            e.hired_at, e.deactivated_at,
+            s.start_time AS shift_start, s.tolerance_minutes
+     FROM employees e
+     LEFT JOIN shifts s ON s.id = e.default_shift_id`
+  );
+  return new Map(rows.map((r) => [r.id, r]));
+}
+
+async function fetchPunches(fromDate: string, toDate: string): Promise<PunchDbRow[]> {
+  return query<PunchDbRow>(
+    `SELECT p.id, p.employee_id, p.punch_type, p.punched_at,
+            (p.punched_at AT TIME ZONE $3)::date::text AS work_date
+     FROM punches p
+     WHERE NOT p.voided
+       AND (p.punched_at AT TIME ZONE $3)::date BETWEEN $1::date AND $2::date
+     ORDER BY p.punched_at`,
+    [fromDate, toDate, config.plantTimezone]
+  );
+}
+
+/** Cálculo de un día local de planta para todos los empleados con checadas. */
+export async function computeDayAll(workDate: string): Promise<DayCalc[]> {
+  const [punches, employees, settings] = await Promise.all([
+    fetchPunches(workDate, workDate),
+    fetchEmployees(),
+    getSettings(),
+  ]);
+
+  const byEmployee = new Map<string, EnginePunch[]>();
+  for (const p of punches) {
+    const list = byEmployee.get(p.employee_id) ?? [];
+    list.push({ id: p.id, punch_type: p.punch_type, punched_at: p.punched_at });
+    byEmployee.set(p.employee_id, list);
+  }
+
+  const results: DayCalc[] = [];
+  for (const [employeeId, empPunches] of byEmployee) {
+    const emp = employees.get(employeeId);
+    results.push(
+      computeDay(empPunches, {
+        employeeId,
+        workDate,
+        timezone: config.plantTimezone,
+        shiftStart: emp?.shift_start ?? null,
+        toleranceMinutes: emp?.tolerance_minutes ?? 5,
+        duplicateWindowMinutes: settings.duplicate_window_minutes,
+      })
+    );
+  }
+  return results;
+}
+
+export interface WeekComputation {
+  week_start: string;
+  week_end: string;
+  employees: WeekEmployeeCalc[];
+  anomaly_count: number;
+}
+
+/** Cálculo semanal completo con reconciliación de OT y faltas. */
+export async function computeWeek(weekStart: string): Promise<WeekComputation> {
+  const settings = await getSettings();
+  const start = DateTime.fromISO(weekStart, { zone: config.plantTimezone });
+  const weekEnd = start.plus({ days: 6 }).toISODate()!;
+  const [punches, employees] = await Promise.all([fetchPunches(weekStart, weekEnd), fetchEmployees()]);
+
+  const dates: string[] = Array.from({ length: 7 }, (_, i) => start.plus({ days: i }).toISODate()!);
+  const today = DateTime.now().setZone(config.plantTimezone).toISODate()!;
+
+  // Agrupar checadas por empleado × día
+  const byEmpDay = new Map<string, Map<string, EnginePunch[]>>();
+  for (const p of punches) {
+    const days = byEmpDay.get(p.employee_id) ?? new Map<string, EnginePunch[]>();
+    const list = days.get(p.work_date) ?? [];
+    list.push({ id: p.id, punch_type: p.punch_type, punched_at: p.punched_at });
+    days.set(p.work_date, list);
+    byEmpDay.set(p.employee_id, days);
+  }
+
+  // Empleados a reportar: con checadas en la semana, o activos durante la semana
+  const relevant = new Set<string>(byEmpDay.keys());
+  for (const emp of employees.values()) {
+    const hiredOk = !emp.hired_at || emp.hired_at <= weekEnd;
+    const notDeactivated = !emp.deactivated_at || emp.deactivated_at >= weekStart;
+    if (emp.active && hiredOk && notDeactivated) relevant.add(emp.id);
+  }
+
+  const result: WeekEmployeeCalc[] = [];
+  let anomalyCount = 0;
+
+  for (const employeeId of relevant) {
+    const emp = employees.get(employeeId);
+    if (!emp) continue;
+    const days: DayCalc[] = [];
+
+    for (const date of dates) {
+      const dayPunches = byEmpDay.get(employeeId)?.get(date);
+      if (!dayPunches) continue;
+      days.push(
+        computeDay(dayPunches, {
+          employeeId,
+          workDate: date,
+          timezone: config.plantTimezone,
+          shiftStart: emp.shift_start,
+          toleranceMinutes: emp.tolerance_minutes ?? 5,
+          duplicateWindowMinutes: settings.duplicate_window_minutes,
+        })
+      );
+    }
+
+    const { regular_minutes, overtime_minutes } = reconcileWeekOvertime(
+      days.map((d) => d.worked_minutes),
+      settings.daily_ot_threshold_minutes,
+      settings.weekly_ot_threshold_minutes
+    );
+
+    // Faltas: día laborable (settings.work_days, ISO 1=lunes) ya transcurrido,
+    // dentro del periodo activo del empleado, sin ninguna checada.
+    const punchedDates = new Set(days.map((d) => d.work_date));
+    let absences = 0;
+    for (const date of dates) {
+      if (date > today) continue;
+      const weekday = DateTime.fromISO(date).weekday;
+      if (!settings.work_days.includes(weekday)) continue;
+      if (emp.hired_at && date < emp.hired_at) continue;
+      if (emp.deactivated_at && date > emp.deactivated_at) continue;
+      if (!punchedDates.has(date)) absences += 1;
+    }
+
+    anomalyCount += days.reduce((n, d) => n + d.anomalies.length, 0);
+
+    result.push({
+      employee_id: employeeId,
+      employee_number: emp.employee_number,
+      full_name: emp.full_name,
+      social_security: emp.social_security,
+      days_worked: days.filter((d) => d.worked_minutes > 0).length,
+      regular_minutes,
+      overtime_minutes,
+      lates: days.filter((d) => d.late).length,
+      absences,
+      total_minutes: regular_minutes + overtime_minutes,
+      days,
+    });
+  }
+
+  result.sort((a, b) => a.employee_number - b.employee_number);
+  return { week_start: weekStart, week_end: weekEnd, employees: result, anomaly_count: anomalyCount };
+}

@@ -2,9 +2,9 @@ import { Router } from 'express';
 import bcrypt from 'bcryptjs';
 import multer from 'multer';
 import { z } from 'zod';
-import { query, queryOne } from '../db.js';
-import { badRequest, notFound, unauthorized, HttpError } from '../errors.js';
-import { requireAuth, requireKiosk } from '../middleware/auth.js';
+import { query, queryOne, withTransaction } from '../db.js';
+import { badRequest, conflict, notFound, unauthorized, HttpError } from '../errors.js';
+import { requireAuth, requireAdmin, requireKiosk } from '../middleware/auth.js';
 import { inferPunchType } from '../services/punchInference.js';
 import { lockedForSeconds, recordFailure, recordSuccess } from '../services/pinLimiter.js';
 import { getSettings } from '../services/settingsService.js';
@@ -151,6 +151,84 @@ punchesRouter.post('/:id/photo', requireKiosk, upload.single('photo'), async (re
   await storage.put(key, req.file.buffer, req.file.mimetype || 'image/jpeg');
   await query(`UPDATE punches SET photo_key = $1 WHERE id = $2`, [key, punch.id]);
   res.json({ ok: true, photo_key: key });
+});
+
+const manualSchema = z.object({
+  employee_id: z.string().uuid(),
+  punch_type: z.enum(['shift_in', 'shift_out', 'meal_out', 'meal_in']),
+  punched_at: z.string().datetime({ offset: true }),
+  area_id: z.string().uuid().nullish(),
+  reason: z.string().trim().min(3, 'La razón es obligatoria'),
+  /** Si corrige una checada existente, esta se anula en la misma operación. */
+  correction_of: z.string().uuid().nullish(),
+});
+
+/**
+ * Corrección manual (solo admin). La checada original nunca se edita:
+ * si correction_of viene, la original se marca voided (con auditoría en
+ * punch_voids) y la nueva la referencia.
+ */
+punchesRouter.post('/manual', requireAuth, requireAdmin, async (req, res) => {
+  const body = manualSchema.parse(req.body);
+  const userId = req.user!.id;
+
+  const employee = await queryOne<{ id: string }>(`SELECT id FROM employees WHERE id = $1`, [body.employee_id]);
+  if (!employee) throw notFound('Empleado no encontrado');
+
+  const created = await withTransaction(async (client) => {
+    if (body.correction_of) {
+      const orig = await client.query<{ id: string; voided: boolean }>(
+        `SELECT id, voided FROM punches WHERE id = $1 FOR UPDATE`,
+        [body.correction_of]
+      );
+      if (!orig.rows[0]) throw notFound('Checada a corregir no encontrada');
+      if (!orig.rows[0].voided) {
+        await client.query(
+          `INSERT INTO punch_voids (punch_id, voided_by, reason) VALUES ($1, $2, $3)`,
+          [body.correction_of, userId, body.reason]
+        );
+        await client.query(`UPDATE punches SET voided = true WHERE id = $1`, [body.correction_of]);
+      }
+    }
+    const inserted = await client.query(
+      `INSERT INTO punches (employee_id, punch_type, punched_at, area_id, source, created_by, correction_of, correction_reason)
+       VALUES ($1, $2, $3, $4, 'manual', $5, $6, $7)
+       RETURNING *`,
+      [
+        body.employee_id,
+        body.punch_type,
+        new Date(body.punched_at),
+        body.area_id ?? null,
+        userId,
+        body.correction_of ?? null,
+        body.reason,
+      ]
+    );
+    return inserted.rows[0] as Record<string, unknown>;
+  });
+
+  res.status(201).json(created);
+});
+
+/** Anulación sin reemplazo (solo admin), con auditoría. */
+punchesRouter.post('/:id/void', requireAuth, requireAdmin, async (req, res) => {
+  const body = z.object({ reason: z.string().trim().min(3, 'La razón es obligatoria') }).parse(req.body);
+  const userId = req.user!.id;
+  await withTransaction(async (client) => {
+    const orig = await client.query<{ id: string; voided: boolean }>(
+      `SELECT id, voided FROM punches WHERE id = $1 FOR UPDATE`,
+      [req.params.id]
+    );
+    if (!orig.rows[0]) throw notFound('Checada no encontrada');
+    if (orig.rows[0].voided) throw conflict('La checada ya está anulada');
+    await client.query(`INSERT INTO punch_voids (punch_id, voided_by, reason) VALUES ($1, $2, $3)`, [
+      req.params.id,
+      userId,
+      body.reason,
+    ]);
+    await client.query(`UPDATE punches SET voided = true WHERE id = $1`, [req.params.id]);
+  });
+  res.json({ ok: true });
 });
 
 const listSchema = z.object({

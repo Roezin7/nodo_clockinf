@@ -3,9 +3,12 @@ import { query } from '../db.js';
 export interface AppSettings {
   daily_ot_threshold_minutes: number;
   weekly_ot_threshold_minutes: number;
+  /** Día de inicio de semana, ISO: 1=lunes … 7=domingo */
   week_start_day: number;
   photo_retention_weeks: number;
   duplicate_window_minutes: number;
+  /** Días laborables (ISO 1=lunes … 7=domingo) para contar faltas */
+  work_days: number[];
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -14,6 +17,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   week_start_day: 1,
   photo_retention_weeks: 8,
   duplicate_window_minutes: 2,
+  work_days: [1, 2, 3, 4, 5, 6],
 };
 
 let cache: { value: AppSettings; at: number } | null = null;
