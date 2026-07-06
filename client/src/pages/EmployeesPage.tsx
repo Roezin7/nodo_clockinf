@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import type { Employee, Shift } from '@clockai/shared';
 import { api, ApiError } from '../api';
 import { useAuth } from '../hooks/useAuth';
+import PunchHistoryModal from '../components/PunchHistoryModal';
 
 type EmployeeWithPin = Employee & { pin?: string };
 
@@ -26,6 +27,8 @@ export default function EmployeesPage() {
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
   const [pinNotice, setPinNotice] = useState<{ name: string; number: number; pin: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [history, setHistory] = useState<Employee | null>(null);
+  const [photoFile, setPhotoFile] = useState<File | null>(null);
 
   const load = useCallback(async () => {
     const params = new URLSearchParams();
@@ -44,6 +47,7 @@ export default function EmployeesPage() {
   function openEdit(emp: Employee | 'new') {
     setEditing(emp);
     setError(null);
+    setPhotoFile(null);
     setForm(
       emp === 'new'
         ? EMPTY_FORM
@@ -66,16 +70,24 @@ export default function EmployeesPage() {
       hired_at: form.hired_at || null,
     };
     try {
+      let employeeId: string | null = null;
       if (editing === 'new') {
         const created = await api<EmployeeWithPin>('/api/employees', {
           method: 'POST',
           body: JSON.stringify(payload),
         });
+        employeeId = created.id;
         if (created.pin) {
           setPinNotice({ name: created.full_name, number: created.employee_number, pin: created.pin });
         }
       } else if (editing) {
+        employeeId = editing.id;
         await api(`/api/employees/${editing.id}`, { method: 'PATCH', body: JSON.stringify(payload) });
+      }
+      if (employeeId && photoFile) {
+        const form = new FormData();
+        form.append('photo', photoFile);
+        await api(`/api/employees/${employeeId}/photo`, { method: 'POST', body: form });
       }
       setEditing(null);
       await load();
@@ -134,7 +146,7 @@ export default function EmployeesPage() {
               <th className="px-4 py-3">Teléfono</th>
               <th className="px-4 py-3">Alta</th>
               <th className="px-4 py-3">Estado</th>
-              {isAdmin && <th className="px-4 py-3 text-right">Acciones</th>}
+              <th className="px-4 py-3 text-right">Acciones</th>
             </tr>
           </thead>
           <tbody>
@@ -154,24 +166,29 @@ export default function EmployeesPage() {
                     {emp.active ? 'Activo' : 'Inactivo'}
                   </span>
                 </td>
-                {isAdmin && (
-                  <td className="px-4 py-3 text-right">
-                    <div className="flex justify-end gap-2">
-                      <button onClick={() => openEdit(emp)} className="rounded-lg border border-line px-2.5 py-1 text-xs font-semibold hover:bg-surface">
-                        Editar
-                      </button>
-                      <button onClick={() => void resetPin(emp)} className="rounded-lg border border-line px-2.5 py-1 text-xs font-semibold hover:bg-surface">
-                        Reset PIN
-                      </button>
-                      <button
-                        onClick={() => void toggleActive(emp)}
-                        className={`rounded-lg border border-line px-2.5 py-1 text-xs font-semibold hover:bg-surface ${emp.active ? 'text-bad' : 'text-ok'}`}
-                      >
-                        {emp.active ? 'Baja' : 'Reactivar'}
-                      </button>
-                    </div>
-                  </td>
-                )}
+                <td className="px-4 py-3 text-right">
+                  <div className="flex justify-end gap-2">
+                    <button onClick={() => setHistory(emp)} className="rounded-lg border border-line px-2.5 py-1 text-xs font-semibold hover:bg-surface">
+                      Checadas
+                    </button>
+                    {isAdmin && (
+                      <>
+                        <button onClick={() => openEdit(emp)} className="rounded-lg border border-line px-2.5 py-1 text-xs font-semibold hover:bg-surface">
+                          Editar
+                        </button>
+                        <button onClick={() => void resetPin(emp)} className="rounded-lg border border-line px-2.5 py-1 text-xs font-semibold hover:bg-surface">
+                          Reset PIN
+                        </button>
+                        <button
+                          onClick={() => void toggleActive(emp)}
+                          className={`rounded-lg border border-line px-2.5 py-1 text-xs font-semibold hover:bg-surface ${emp.active ? 'text-bad' : 'text-ok'}`}
+                        >
+                          {emp.active ? 'Baja' : 'Reactivar'}
+                        </button>
+                      </>
+                    )}
+                  </div>
+                </td>
               </tr>
             ))}
             {!employees.length && (
@@ -214,6 +231,15 @@ export default function EmployeesPage() {
                 <input type="date" className={inputCls} value={form.hired_at} onChange={(e) => setForm({ ...form, hired_at: e.target.value })} />
               </Field>
             </div>
+            <Field label="Foto de enrolamiento (cámara o archivo)">
+              <input
+                type="file"
+                accept="image/*"
+                capture="user"
+                onChange={(e) => setPhotoFile(e.target.files?.[0] ?? null)}
+                className="w-full text-sm"
+              />
+            </Field>
             {editing === 'new' && (
               <p className="text-xs text-ink-soft">Al guardar se genera un PIN de 4 dígitos que se muestra una sola vez.</p>
             )}
@@ -233,6 +259,8 @@ export default function EmployeesPage() {
           </div>
         </Modal>
       )}
+
+      {history && <PunchHistoryModal employee={history} onClose={() => setHistory(null)} />}
 
       {pinNotice && (
         <Modal title="PIN generado" onClose={() => setPinNotice(null)}>

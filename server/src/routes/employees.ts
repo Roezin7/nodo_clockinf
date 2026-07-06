@@ -1,10 +1,14 @@
 import { Router } from 'express';
 import bcrypt from 'bcryptjs';
 import crypto from 'node:crypto';
+import multer from 'multer';
 import { z } from 'zod';
 import { query, queryOne } from '../db.js';
-import { notFound } from '../errors.js';
+import { badRequest, notFound } from '../errors.js';
 import { requireAuth, requireAdmin } from '../middleware/auth.js';
+import { storage } from '../storage.js';
+
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 8 * 1024 * 1024 } });
 
 export const employeesRouter = Router();
 employeesRouter.use(requireAuth);
@@ -55,9 +59,26 @@ employeesRouter.get('/', async (req, res) => {
 });
 
 employeesRouter.get('/:id', async (req, res) => {
-  const row = await queryOne(`SELECT ${PUBLIC_COLS} FROM employees WHERE id = $1`, [req.params.id]);
+  const row = await queryOne<{ enrollment_photo_key: string | null }>(
+    `SELECT ${PUBLIC_COLS} FROM employees WHERE id = $1`,
+    [req.params.id]
+  );
   if (!row) throw notFound('Empleado no encontrado');
-  res.json(row);
+  res.json({
+    ...row,
+    enrollment_photo_url: row.enrollment_photo_key ? await storage.viewUrl(row.enrollment_photo_key) : null,
+  });
+});
+
+/** Foto de enrolamiento (referencia para verificación facial). Se conserva mientras el empleado esté activo. */
+employeesRouter.post('/:id/photo', requireAdmin, upload.single('photo'), async (req, res) => {
+  if (!req.file) throw badRequest('Falta archivo photo');
+  const emp = await queryOne<{ id: string }>(`SELECT id FROM employees WHERE id = $1`, [req.params.id]);
+  if (!emp) throw notFound('Empleado no encontrado');
+  const key = `enrollment/${emp.id}.jpg`;
+  await storage.put(key, req.file.buffer, req.file.mimetype || 'image/jpeg');
+  await query(`UPDATE employees SET enrollment_photo_key = $1 WHERE id = $2`, [key, emp.id]);
+  res.json({ ok: true, photo_key: key, photo_url: await storage.viewUrl(key) });
 });
 
 const createSchema = z.object({

@@ -3,6 +3,7 @@ import { useAuth } from './hooks/useAuth';
 import { logout } from './api';
 import LoginPage from './pages/LoginPage';
 import EmployeesPage from './pages/EmployeesPage';
+import KioskPage from './pages/KioskPage';
 
 function Placeholder({ title }: { title: string }) {
   return (
@@ -72,6 +73,7 @@ export default function App() {
   return (
     <Routes>
       <Route path="/login" element={<LoginPage />} />
+      <Route path="/kiosk" element={<KioskPage />} />
       <Route path="/" element={<Navigate to="/dashboard" replace />} />
       <Route path="/dashboard" element={<Shell><Placeholder title="Dashboard (hoy)" /></Shell>} />
       <Route path="/employees" element={<Shell><EmployeesPage /></Shell>} />
