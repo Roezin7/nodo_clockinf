@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react';
+import { CalendarCheck } from 'lucide-react';
 import type { Employee, Punch, PunchType } from '@clockai/shared';
 import { api } from '../api';
-import { Modal } from '../pages/EmployeesPage';
 import { fmtDateTime, useAppTimezone } from '../time';
+import { EmptyState, Modal, Skeleton, StatusBadge } from './ui';
 
 export const PUNCH_TYPE_LABELS: Record<PunchType, string> = {
   shift_in: 'Entrada',
@@ -23,34 +24,43 @@ export default function PunchHistoryModal({ employee, onClose }: { employee: Emp
   }, [employee.id]);
 
   return (
-    <Modal title={`Checadas — ${employee.full_name} (#${employee.employee_number})`} onClose={onClose}>
-      <div className="max-h-[60vh] overflow-y-auto">
+    <Modal title={`Checadas — ${employee.full_name} (#${employee.employee_number})`} size="lg" onClose={onClose}>
+      <div className="max-h-[55vh] overflow-y-auto">
         {!punches ? (
-          <p className="py-8 text-center text-ink-soft">Cargando…</p>
+          <div className="grid gap-2">
+            {Array.from({ length: 5 }, (_, i) => (
+              <Skeleton key={i} className="h-11 w-full" />
+            ))}
+          </div>
         ) : !punches.length ? (
-          <p className="py-8 text-center text-ink-soft">Sin checadas registradas.</p>
+          <EmptyState icon={CalendarCheck} title="Este empleado aún no tiene checadas." />
         ) : (
-          <table className="w-full text-sm">
+          <table className="w-full text-14">
             <tbody>
               {punches.map((p) => (
-                <tr key={p.id} className={`border-b border-line last:border-0 ${p.voided ? 'opacity-40' : ''}`}>
-                  <td className="py-2 pr-3">
+                <tr key={p.id} className={`border-b border-line last:border-0 ${p.voided ? 'opacity-45' : ''}`}>
+                  <td className="w-14 py-2 pr-3">
                     {p.photo_url ? (
-                      <button onClick={() => setPhotoView(p.photo_url)}>
-                        <img src={p.photo_url} alt="" className="h-12 w-12 rounded-lg object-cover" />
+                      <button onClick={() => setPhotoView(p.photo_url)} aria-label="Ver foto">
+                        <img src={p.photo_url} alt="" className="h-10 w-10 rounded-control object-cover" />
                       </button>
                     ) : (
-                      <div className="flex h-12 w-12 items-center justify-center rounded-lg bg-surface text-xs text-ink-soft">
-                        {p.source === 'manual' ? 'man.' : 'sin foto'}
+                      <div className="flex h-10 w-10 items-center justify-center rounded-control bg-sunken text-12 text-ink-tertiary">
+                        —
                       </div>
                     )}
                   </td>
-                  <td className="py-2 pr-3 font-semibold">{PUNCH_TYPE_LABELS[p.punch_type]}</td>
-                  <td className="py-2 pr-3 tabular-nums">{fmtDateTime(p.punched_at)}</td>
-                  <td className="py-2 pr-3 text-ink-soft">{p.area_name ?? ''}</td>
-                  <td className="py-2 text-xs text-ink-soft">
-                    {p.voided ? 'ANULADA' : p.source === 'manual' ? 'manual' : ''}
-                    {p.correction_reason ? ` · ${p.correction_reason}` : ''}
+                  <td className="py-2 pr-3 font-medium">{PUNCH_TYPE_LABELS[p.punch_type]}</td>
+                  <td className="tnum py-2 pr-3 text-ink-secondary">{fmtDateTime(p.punched_at)}</td>
+                  <td className="py-2 pr-3 text-13 text-ink-secondary">{p.area_name ?? ''}</td>
+                  <td className="py-2 text-right">
+                    <span className="inline-flex gap-1.5">
+                      {p.source === 'manual' && <StatusBadge status="manual" />}
+                      {p.voided && <StatusBadge status="anulada" />}
+                    </span>
+                    {p.correction_reason && (
+                      <span className="block text-12 text-ink-tertiary">{p.correction_reason}</span>
+                    )}
                   </td>
                 </tr>
               ))}
@@ -59,8 +69,11 @@ export default function PunchHistoryModal({ employee, onClose }: { employee: Emp
         )}
       </div>
       {photoView && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-ink/70 p-8" onClick={() => setPhotoView(null)}>
-          <img src={photoView} alt="Foto de checada" className="max-h-full max-w-full rounded-2xl" />
+        <div
+          className="fixed inset-0 z-[70] flex items-center justify-center bg-ink/40 p-8"
+          onClick={() => setPhotoView(null)}
+        >
+          <img src={photoView} alt="Foto de checada" className="max-h-full max-w-full rounded-card shadow-overlay" />
         </div>
       )}
     </Modal>

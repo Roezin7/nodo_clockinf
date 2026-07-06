@@ -4,9 +4,8 @@ import { ALLOWED_TIMEZONES } from '@clockai/shared';
 import { api, ApiError } from '../api';
 import { useAuth } from '../hooks/useAuth';
 import { setAppTimezone } from '../time';
-
-const inputCls =
-  'w-full rounded-lg border border-line bg-surface px-3 py-2 text-sm outline-none focus:border-wine-500';
+import { PageHeader } from '../components/layout/PageHeader';
+import { Button, Field, Input, Select, StatusBadge, useToast } from '../components/ui';
 
 const DAY_NAMES = ['Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb', 'Dom']; // ISO 1..7
 
@@ -16,53 +15,58 @@ export default function SettingsPage() {
 
   if (!isAdmin) {
     return (
-      <div className="p-8">
-        <h1 className="text-2xl font-bold">Configuración</h1>
-        <p className="mt-2 text-ink-soft">Solo el rol admin puede ver esta pantalla.</p>
+      <div>
+        <PageHeader title="Configuración" />
+        <p className="text-14 text-ink-secondary">Solo el rol admin puede ver esta pantalla.</p>
       </div>
     );
   }
 
   return (
-    <div className="grid gap-6 p-6 lg:grid-cols-2">
-      <ThresholdsCard />
-      <ShiftsCard />
-      <AreasCard />
-      <UsersCard currentUserId={user!.id} />
+    <div>
+      <PageHeader title="Configuración" />
+      <div className="grid items-start gap-4 lg:grid-cols-2">
+        <ThresholdsCard />
+        <ShiftsCard />
+        <AreasCard />
+        <UsersCard currentUserId={user!.id} />
+      </div>
     </div>
   );
 }
 
 function Card({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <section className="rounded-xl border border-line bg-card p-5">
-      <h2 className="text-lg font-bold">{title}</h2>
-      <div className="mt-3">{children}</div>
+    <section className="rounded-card border border-line bg-raised p-6 shadow-card">
+      <h2 className="mb-4 text-16 font-semibold">{title}</h2>
+      {children}
     </section>
   );
 }
 
 function ThresholdsCard() {
+  const toast = useToast();
   const [settings, setSettings] = useState<Settings | null>(null);
-  const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     void api<Settings>('/api/settings').then(setSettings);
   }, []);
 
-  async function save() {
+  async function save(): Promise<void> {
     if (!settings) return;
+    setSaving(true);
     setError(null);
     try {
       const updated = await api<Settings>('/api/settings', { method: 'PATCH', body: JSON.stringify(settings) });
       setSettings(updated);
-      // Toda la UI se actualiza a la nueva zona al instante
-      setAppTimezone(updated.timezone);
-      setSaved(true);
-      setTimeout(() => setSaved(false), 2000);
+      setAppTimezone(updated.timezone); // toda la UI cambia de zona al instante
+      toast('Reglas de nómina guardadas');
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Error al guardar');
+    } finally {
+      setSaving(false);
     }
   }
 
@@ -70,105 +74,119 @@ function ThresholdsCard() {
 
   return (
     <Card title="Reglas de nómina">
-      <label className="mb-3 block">
-        <span className="mb-1 block text-sm font-semibold">Zona horaria de la planta</span>
-        <select
-          className={inputCls}
-          value={settings.timezone}
-          onChange={(e) => setSettings({ ...settings, timezone: e.target.value })}
-        >
-          {ALLOWED_TIMEZONES.map((tz) => (
-            <option key={tz.id} value={tz.id}>{tz.label} — {tz.id}</option>
-          ))}
-        </select>
-        <span className="mt-1 block text-xs text-ink-soft">
-          Gobierna los cortes de día, retardos, reportes y TODA hora mostrada (kiosco incluido).
-        </span>
-      </label>
-      <div className="grid grid-cols-2 gap-3">
-        <label className="block">
-          <span className="mb-1 block text-sm font-semibold">OT diario después de (horas)</span>
-          <input
-            type="number" min={1} max={24} step={0.5}
-            className={inputCls}
-            value={settings.daily_ot_threshold_minutes / 60}
-            onChange={(e) => setSettings({ ...settings, daily_ot_threshold_minutes: Math.round(Number(e.target.value) * 60) })}
-          />
-        </label>
-        <label className="block">
-          <span className="mb-1 block text-sm font-semibold">OT semanal después de (horas)</span>
-          <input
-            type="number" min={1} max={120} step={0.5}
-            className={inputCls}
-            value={settings.weekly_ot_threshold_minutes / 60}
-            onChange={(e) => setSettings({ ...settings, weekly_ot_threshold_minutes: Math.round(Number(e.target.value) * 60) })}
-          />
-        </label>
-        <label className="block">
-          <span className="mb-1 block text-sm font-semibold">La semana inicia en</span>
-          <select
-            className={inputCls}
-            value={settings.week_start_day}
-            onChange={(e) => setSettings({ ...settings, week_start_day: Number(e.target.value) })}
-          >
-            {DAY_NAMES.map((name, i) => (
-              <option key={i + 1} value={i + 1}>{name}</option>
+      <div className="grid gap-1">
+        <Field label="Zona horaria de la planta" hint="Gobierna cortes de día, retardos, reportes y toda hora mostrada">
+          <Select value={settings.timezone} onChange={(e) => setSettings({ ...settings, timezone: e.target.value })}>
+            {ALLOWED_TIMEZONES.map((tz) => (
+              <option key={tz.id} value={tz.id}>
+                {tz.label} — {tz.id}
+              </option>
             ))}
-          </select>
-        </label>
-        <label className="block">
-          <span className="mb-1 block text-sm font-semibold">Retención de fotos (semanas)</span>
-          <input
-            type="number" min={1} max={104}
-            className={inputCls}
-            value={settings.photo_retention_weeks}
-            onChange={(e) => setSettings({ ...settings, photo_retention_weeks: Number(e.target.value) })}
-          />
-        </label>
-      </div>
-      <div className="mt-3">
-        <span className="mb-1 block text-sm font-semibold">Días laborables (para contar faltas)</span>
-        <div className="flex gap-1.5">
-          {DAY_NAMES.map((name, i) => {
-            const day = i + 1;
-            const active = settings.work_days.includes(day);
-            return (
-              <button
-                key={day}
-                onClick={() =>
-                  setSettings({
-                    ...settings,
-                    work_days: active
-                      ? settings.work_days.filter((d) => d !== day)
-                      : [...settings.work_days, day].sort(),
-                  })
-                }
-                className={`rounded-lg border px-3 py-1.5 text-sm font-bold ${
-                  active ? 'border-wine-500 bg-wine-50 text-wine-700' : 'border-line text-ink-soft'
-                }`}
-              >
-                {name}
-              </button>
-            );
-          })}
+          </Select>
+        </Field>
+        <div className="grid grid-cols-2 gap-4">
+          <Field label="OT diario después de (horas)">
+            <Input
+              type="number"
+              min={1}
+              max={24}
+              step={0.5}
+              value={settings.daily_ot_threshold_minutes / 60}
+              onChange={(e) =>
+                setSettings({ ...settings, daily_ot_threshold_minutes: Math.round(Number(e.target.value) * 60) })
+              }
+            />
+          </Field>
+          <Field label="OT semanal después de (horas)">
+            <Input
+              type="number"
+              min={1}
+              max={120}
+              step={0.5}
+              value={settings.weekly_ot_threshold_minutes / 60}
+              onChange={(e) =>
+                setSettings({ ...settings, weekly_ot_threshold_minutes: Math.round(Number(e.target.value) * 60) })
+              }
+            />
+          </Field>
+        </div>
+        <div className="grid grid-cols-2 gap-4">
+          <Field label="La semana inicia en">
+            <Select
+              value={settings.week_start_day}
+              onChange={(e) => setSettings({ ...settings, week_start_day: Number(e.target.value) })}
+            >
+              {DAY_NAMES.map((name, i) => (
+                <option key={i + 1} value={i + 1}>
+                  {name}
+                </option>
+              ))}
+            </Select>
+          </Field>
+          <Field label="Retención de fotos (semanas)">
+            <Input
+              type="number"
+              min={1}
+              max={104}
+              value={settings.photo_retention_weeks}
+              onChange={(e) => setSettings({ ...settings, photo_retention_weeks: Number(e.target.value) })}
+            />
+          </Field>
+        </div>
+        <div>
+          <span className="mb-1 block text-13 font-medium text-ink">Días laborables (para contar faltas)</span>
+          <div className="flex gap-1.5">
+            {DAY_NAMES.map((name, i) => {
+              const day = i + 1;
+              const active = settings.work_days.includes(day);
+              return (
+                <button
+                  key={day}
+                  aria-pressed={active}
+                  onClick={() =>
+                    setSettings({
+                      ...settings,
+                      work_days: active
+                        ? settings.work_days.filter((d) => d !== day)
+                        : [...settings.work_days, day].sort(),
+                    })
+                  }
+                  className={`h-8 rounded-control border px-3 text-13 font-medium transition-colors duration-150 ${
+                    active
+                      ? 'border-accent bg-accent-subtle text-accent'
+                      : 'border-line bg-raised text-ink-secondary hover:bg-sunken'
+                  }`}
+                >
+                  {name}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+        {error && (
+          <p className="mt-2 text-12 font-medium text-danger" role="alert">
+            {error}
+          </p>
+        )}
+        <div className="mt-3">
+          <Button onClick={() => void save()} loading={saving}>
+            Guardar reglas
+          </Button>
         </div>
       </div>
-      {error && <p className="mt-3 text-sm font-semibold text-bad">{error}</p>}
-      <button onClick={() => void save()} className="mt-4 rounded-lg bg-wine-600 px-4 py-2 text-sm font-bold text-white hover:bg-wine-700">
-        {saved ? 'Guardado ✓' : 'Guardar reglas'}
-      </button>
     </Card>
   );
 }
 
 function ShiftsCard() {
+  const toast = useToast();
   const [shifts, setShifts] = useState<Shift[]>([]);
   const [error, setError] = useState<string | null>(null);
 
-  const load = () => void api<Shift[]>('/api/shifts').then(setShifts);
+  const load = (): void => void api<Shift[]>('/api/shifts').then(setShifts);
   useEffect(load, []);
 
-  async function saveShift(shift: Shift) {
+  async function saveShift(shift: Shift): Promise<void> {
     setError(null);
     try {
       await api(`/api/shifts/${shift.id}`, {
@@ -181,6 +199,7 @@ function ShiftsCard() {
           meal_windows: shift.meal_windows,
         }),
       });
+      toast('Turno guardado');
       load();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Error al guardar turno');
@@ -194,86 +213,95 @@ function ShiftsCard() {
           <ShiftEditor key={shift.id} shift={shift} onSave={saveShift} />
         ))}
       </div>
-      {error && <p className="mt-3 text-sm font-semibold text-bad">{error}</p>}
+      {error && (
+        <p className="mt-3 text-12 font-medium text-danger" role="alert">
+          {error}
+        </p>
+      )}
     </Card>
   );
 }
 
 function ShiftEditor({ shift, onSave }: { shift: Shift; onSave: (s: Shift) => Promise<void> }) {
   const [s, setS] = useState(shift);
-  const [saved, setSaved] = useState(false);
+  const [saving, setSaving] = useState(false);
   const meal: MealWindow | undefined = s.meal_windows[0];
 
   return (
-    <div className="rounded-lg border border-line p-3">
-      <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
-        <label className="block">
-          <span className="mb-1 block text-xs font-semibold text-ink-soft">Nombre</span>
-          <input className={inputCls} value={s.name} onChange={(e) => setS({ ...s, name: e.target.value })} />
-        </label>
-        <label className="block">
-          <span className="mb-1 block text-xs font-semibold text-ink-soft">Entrada</span>
-          <input type="time" className={inputCls} value={s.start_time.slice(0, 5)} onChange={(e) => setS({ ...s, start_time: e.target.value })} />
-        </label>
-        <label className="block">
-          <span className="mb-1 block text-xs font-semibold text-ink-soft">Salida</span>
-          <input type="time" className={inputCls} value={s.end_time.slice(0, 5)} onChange={(e) => setS({ ...s, end_time: e.target.value })} />
-        </label>
-        <label className="block">
-          <span className="mb-1 block text-xs font-semibold text-ink-soft">Tolerancia (min)</span>
-          <input type="number" min={0} max={120} className={inputCls} value={s.tolerance_minutes} onChange={(e) => setS({ ...s, tolerance_minutes: Number(e.target.value) })} />
-        </label>
+    <div className="rounded-control border border-line bg-sunken/50 p-4">
+      <div className="grid grid-cols-2 gap-x-4">
+        <Field label="Nombre">
+          <Input value={s.name} onChange={(e) => setS({ ...s, name: e.target.value })} />
+        </Field>
+        <Field label="Entrada">
+          <Input type="time" value={s.start_time.slice(0, 5)} onChange={(e) => setS({ ...s, start_time: e.target.value })} />
+        </Field>
+        <Field label="Salida">
+          <Input type="time" value={s.end_time.slice(0, 5)} onChange={(e) => setS({ ...s, end_time: e.target.value })} />
+        </Field>
+        <Field label="Tolerancia (min)">
+          <Input
+            type="number"
+            min={0}
+            max={120}
+            value={s.tolerance_minutes}
+            onChange={(e) => setS({ ...s, tolerance_minutes: Number(e.target.value) })}
+          />
+        </Field>
       </div>
-      <div className="mt-2 flex items-end gap-2">
-        <label className="block">
-          <span className="mb-1 block text-xs font-semibold text-ink-soft">Comida de</span>
-          <input
+      <div className="flex items-end gap-4">
+        <Field label="Comida de" hint="Vacío = turno sin comida">
+          <Input
             type="time"
-            className={inputCls}
             value={meal?.start ?? ''}
             onChange={(e) =>
-              setS({ ...s, meal_windows: e.target.value ? [{ name: 'Comida', start: e.target.value, end: meal?.end ?? e.target.value, paid: false }] : [] })
+              setS({
+                ...s,
+                meal_windows: e.target.value
+                  ? [{ name: 'Comida', start: e.target.value, end: meal?.end ?? e.target.value, paid: false }]
+                  : [],
+              })
             }
           />
-        </label>
-        <label className="block">
-          <span className="mb-1 block text-xs font-semibold text-ink-soft">a</span>
-          <input
+        </Field>
+        <Field label="a">
+          <Input
             type="time"
-            className={inputCls}
             value={meal?.end ?? ''}
             disabled={!meal}
             onChange={(e) => meal && setS({ ...s, meal_windows: [{ ...meal, end: e.target.value }] })}
           />
-        </label>
-        <span className="pb-2 text-xs text-ink-soft">(vacío = turno sin comida)</span>
-        <div className="flex-1" />
-        <button
-          onClick={() => {
-            void onSave(s).then(() => {
-              setSaved(true);
-              setTimeout(() => setSaved(false), 2000);
-            });
-          }}
-          className="rounded-lg border border-wine-500 px-3 py-2 text-sm font-bold text-wine-600 hover:bg-wine-50"
-        >
-          {saved ? 'Guardado ✓' : 'Guardar'}
-        </button>
+        </Field>
+        <div className="mb-6 ml-auto">
+          <Button
+            variant="secondary"
+            size="sm"
+            loading={saving}
+            onClick={() => {
+              setSaving(true);
+              void onSave(s).finally(() => setSaving(false));
+            }}
+          >
+            Guardar turno
+          </Button>
+        </div>
       </div>
     </div>
   );
 }
 
 function AreasCard() {
+  const toast = useToast();
   const [areas, setAreas] = useState<Area[]>([]);
   const [name, setName] = useState('');
 
-  const load = () => void api<Area[]>('/api/areas').then(setAreas);
+  const load = (): void => void api<Area[]>('/api/areas').then(setAreas);
   useEffect(load, []);
 
-  async function add() {
+  async function add(): Promise<void> {
     if (!name.trim()) return;
     await api('/api/areas', { method: 'POST', body: JSON.stringify({ name: name.trim() }) });
+    toast('Área agregada');
     setName('');
     load();
   }
@@ -282,44 +310,50 @@ function AreasCard() {
     <Card title="Áreas de trabajo">
       <ul className="flex flex-wrap gap-2">
         {areas.map((a) => (
-          <li key={a.id} className="rounded-full border border-line bg-surface px-3 py-1 text-sm font-semibold">
+          <li key={a.id} className="rounded-full border border-line bg-sunken px-3 py-1 text-13 font-medium text-ink-secondary">
             {a.name}
           </li>
         ))}
       </ul>
-      <div className="mt-3 flex gap-2">
-        <input className={inputCls} placeholder="Nueva área…" value={name} onChange={(e) => setName(e.target.value)} />
-        <button onClick={() => void add()} className="rounded-lg bg-wine-600 px-4 py-2 text-sm font-bold text-white hover:bg-wine-700">
+      <div className="mt-4 flex gap-2">
+        <Input placeholder="Nueva área" value={name} onChange={(e) => setName(e.target.value)} />
+        <Button variant="secondary" onClick={() => void add()} disabled={!name.trim()}>
           Agregar
-        </button>
+        </Button>
       </div>
     </Card>
   );
 }
 
 function UsersCard({ currentUserId }: { currentUserId: string }) {
+  const toast = useToast();
   const [users, setUsers] = useState<User[]>([]);
   const [form, setForm] = useState({ name: '', email: '', password: '', role: 'supervisor' as 'admin' | 'supervisor' });
   const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
 
-  const load = () => void api<User[]>('/api/users').then(setUsers);
+  const load = (): void => void api<User[]>('/api/users').then(setUsers);
   useEffect(load, []);
 
-  async function add() {
+  async function add(): Promise<void> {
+    setSaving(true);
     setError(null);
     try {
       await api('/api/users', { method: 'POST', body: JSON.stringify(form) });
+      toast('Usuario creado');
       setForm({ name: '', email: '', password: '', role: 'supervisor' });
       load();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Error al crear usuario');
+    } finally {
+      setSaving(false);
     }
   }
 
-  async function toggleActive(u: User) {
-    setError(null);
+  async function toggleActive(u: User): Promise<void> {
     try {
       await api(`/api/users/${u.id}`, { method: 'PATCH', body: JSON.stringify({ active: !u.active }) });
+      toast(u.active ? 'Usuario desactivado' : 'Usuario activado');
       load();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Error');
@@ -330,39 +364,44 @@ function UsersCard({ currentUserId }: { currentUserId: string }) {
     <Card title="Usuarios del sistema">
       <ul className="divide-y divide-line">
         {users.map((u) => (
-          <li key={u.id} className="flex items-center justify-between py-2 text-sm">
-            <span>
-              <span className="font-semibold">{u.name}</span>{' '}
-              <span className="text-ink-soft">· {u.email} · {u.role}</span>
-            </span>
-            {u.id !== currentUserId && (
-              <button
-                onClick={() => void toggleActive(u)}
-                className={`rounded-lg border border-line px-2.5 py-1 text-xs font-semibold hover:bg-surface ${u.active ? 'text-bad' : 'text-ok'}`}
-              >
-                {u.active ? 'Desactivar' : 'Activar'}
-              </button>
-            )}
+          <li key={u.id} className="flex items-center justify-between gap-3 py-2.5 text-14">
+            <div className="min-w-0">
+              <p className="truncate font-medium">{u.name}</p>
+              <p className="truncate text-12 text-ink-tertiary">
+                {u.email} · {u.role}
+              </p>
+            </div>
+            <div className="flex shrink-0 items-center gap-2">
+              <StatusBadge status={u.active ? 'activo' : 'inactivo'} />
+              {u.id !== currentUserId && (
+                <Button variant="ghost" size="sm" onClick={() => void toggleActive(u)}>
+                  {u.active ? 'Desactivar' : 'Activar'}
+                </Button>
+              )}
+            </div>
           </li>
         ))}
       </ul>
-      <div className="mt-4 grid grid-cols-2 gap-2">
-        <input className={inputCls} placeholder="Nombre" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
-        <input className={inputCls} placeholder="Correo" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} />
-        <input className={inputCls} type="password" placeholder="Contraseña (mín. 8)" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} />
-        <select className={inputCls} value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value as 'admin' | 'supervisor' })}>
-          <option value="supervisor">Supervisor</option>
-          <option value="admin">Admin</option>
-        </select>
+      <div className="mt-4 grid grid-cols-2 gap-x-4">
+        <Field label="Nombre" required>
+          <Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
+        </Field>
+        <Field label="Correo" required>
+          <Input type="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} />
+        </Field>
+        <Field label="Contraseña" required hint="Mínimo 8 caracteres" error={error}>
+          <Input type="password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} />
+        </Field>
+        <Field label="Rol" required>
+          <Select value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value as 'admin' | 'supervisor' })}>
+            <option value="supervisor">Supervisor</option>
+            <option value="admin">Admin</option>
+          </Select>
+        </Field>
       </div>
-      {error && <p className="mt-2 text-sm font-semibold text-bad">{error}</p>}
-      <button
-        onClick={() => void add()}
-        disabled={!form.name || !form.email || form.password.length < 8}
-        className="mt-3 rounded-lg bg-wine-600 px-4 py-2 text-sm font-bold text-white hover:bg-wine-700 disabled:opacity-40"
-      >
+      <Button onClick={() => void add()} loading={saving} disabled={!form.name || !form.email || form.password.length < 8}>
         Crear usuario
-      </button>
+      </Button>
     </Card>
   );
 }

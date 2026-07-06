@@ -1,13 +1,17 @@
 import { useEffect, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
+import { CalendarCheck } from 'lucide-react';
 import type { AttendanceDayResponse, DayDetailRow } from '@clockai/shared';
 import { api } from '../api';
 import { fmtTime, useAppTimezone } from '../time';
+import { PageHeader } from '../components/layout/PageHeader';
+import { EmptyState, KpiSkeleton, StatusBadge, Table, TableSkeleton, TD, TH, THead, TRow } from '../components/ui';
 
 const REFRESH_MS = 30_000;
 
 export default function DashboardPage() {
   useAppTimezone(); // re-render si cambia la zona de la planta
+  const navigate = useNavigate();
   const [data, setData] = useState<AttendanceDayResponse | null>(null);
   const [updatedAt, setUpdatedAt] = useState<Date | null>(null);
 
@@ -32,99 +36,113 @@ export default function DashboardPage() {
     };
   }, []);
 
-  if (!data) return <p className="p-8 text-ink-soft">Cargando…</p>;
+  if (!data) {
+    return (
+      <div>
+        <PageHeader title="Hoy" />
+        <div className="mb-6 grid grid-cols-2 gap-4 lg:grid-cols-4">
+          <KpiSkeleton />
+          <KpiSkeleton />
+          <KpiSkeleton />
+          <KpiSkeleton />
+        </div>
+        <TableSkeleton rows={6} cols={5} />
+      </div>
+    );
+  }
 
   const inside = data.rows.filter((r) => r.calc.state === 'in' || r.calc.state === 'meal');
+  const atMeal = data.rows.filter((r) => r.calc.state === 'meal');
   const lates = data.rows.filter((r) => r.calc.late);
   const anomalies = data.rows.filter((r) => r.calc.anomalies.length > 0);
 
-  // Agrupar quién está adentro por área
+  // Agrupar presentes por área para la tabla en vivo
   const byArea = new Map<string, DayDetailRow[]>();
   for (const row of inside) {
     const area = row.area_name ?? 'Sin área asignada';
     byArea.set(area, [...(byArea.get(area) ?? []), row]);
   }
-
-  // Contadores por turno (de los presentes)
-  const byShift = new Map<string, number>();
-  for (const row of inside) {
-    const shift = row.shift_name ?? 'Sin turno';
-    byShift.set(shift, (byShift.get(shift) ?? 0) + 1);
-  }
+  const areas = [...byArea.entries()].sort((a, b) => a[0].localeCompare(b[0]));
 
   return (
-    <div className="p-6">
-      <div className="flex flex-wrap items-baseline gap-3">
-        <h1 className="text-2xl font-bold">Hoy — {data.date}</h1>
-        <span className="text-xs text-ink-soft">
-          Actualizado {updatedAt ? fmtTime(updatedAt.toISOString()) : '—'}
-          {' · '}se refresca cada 30s
-        </span>
-      </div>
-
-      <div className="mt-4 grid grid-cols-2 gap-3 md:grid-cols-4">
-        <Stat label="Adentro ahora" value={inside.length} tone="ok" />
-        <Stat label="Checaron hoy" value={data.rows.length} />
-        <Stat label="Retardos" value={lates.length} tone={lates.length ? 'warn' : undefined} />
-        <Stat label="Días con anomalías" value={anomalies.length} tone={anomalies.length ? 'bad' : undefined} />
-      </div>
-
-      <div className="mt-3 flex flex-wrap gap-2">
-        {[...byShift.entries()].map(([shift, count]) => (
-          <span key={shift} className="rounded-full border border-line bg-card px-3 py-1 text-sm font-semibold">
-            {shift}: <span className="tabular-nums">{count}</span> adentro
+    <div>
+      <PageHeader
+        title="Hoy"
+        meta={
+          <span className="text-13 text-ink-tertiary">
+            {data.date} · actualizado <span className="tnum">{updatedAt ? fmtTime(updatedAt.toISOString()) : '—'}</span> · cada 30s
           </span>
-        ))}
+        }
+      />
+
+      {/* KPIs: números en Hanken 40 tabular. Son navegación, no decoración. */}
+      <div className="mb-6 grid grid-cols-2 gap-4 lg:grid-cols-4">
+        <Kpi label="Adentro ahora" value={inside.length} tone="text-success" onClick={() => scrollToTable()} />
+        <Kpi label="Retardos hoy" value={lates.length} tone={lates.length ? 'text-warning' : 'text-ink'} onClick={() => navigate('/attendance')} />
+        <Kpi label="En comida" value={atMeal.length} tone={atMeal.length ? 'text-info' : 'text-ink'} onClick={() => scrollToTable()} />
+        <Kpi
+          label="Anomalías pendientes"
+          value={anomalies.length}
+          tone={anomalies.length ? 'text-danger' : 'text-ink'}
+          onClick={() => navigate('/attendance')}
+        />
       </div>
 
-      <h2 className="mt-8 text-lg font-bold">Quién está adentro, por área</h2>
+      <h2 className="mb-3 text-18 font-semibold" id="live-table">
+        Adentro ahora, por área
+      </h2>
       {!inside.length ? (
-        <p className="mt-2 text-ink-soft">Nadie adentro en este momento.</p>
-      ) : (
-        <div className="mt-3 grid gap-4 md:grid-cols-2">
-          {[...byArea.entries()].map(([area, rows]) => (
-            <div key={area} className="rounded-xl border border-line bg-card p-4">
-              <h3 className="flex items-baseline justify-between font-bold">
-                {area}
-                <span className="text-sm font-semibold text-ink-soft">{rows.length}</span>
-              </h3>
-              <ul className="mt-2 divide-y divide-line">
-                {rows.map((r) => (
-                  <li key={r.employee_id} className="flex items-center justify-between py-1.5 text-sm">
-                    <span>
-                      <span className="font-bold tabular-nums">#{r.employee_number}</span>{' '}
-                      <span className="font-semibold">{r.full_name}</span>
-                    </span>
-                    <span className="flex items-center gap-2">
-                      {r.calc.state === 'meal' && (
-                        <span className="rounded-full bg-warn/10 px-2 py-0.5 text-xs font-bold text-warn">Comida</span>
-                      )}
-                      {r.calc.late && (
-                        <span className="rounded-full bg-bad/10 px-2 py-0.5 text-xs font-bold text-bad">Retardo</span>
-                      )}
-                      <span className="tabular-nums text-ink-soft">desde {fmtTime(r.calc.shift_in)}</span>
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          ))}
+        <div className="rounded-card border border-line bg-raised shadow-card">
+          <EmptyState icon={CalendarCheck} title="Nadie adentro en este momento." />
         </div>
+      ) : (
+        <Table>
+          <THead>
+            <tr>
+              <TH>Área</TH>
+              <TH>Empleado</TH>
+              <TH>Estado</TH>
+              <TH num>Entrada</TH>
+            </tr>
+          </THead>
+          <tbody>
+            {areas.flatMap(([area, rows]) =>
+              rows.map((r, i) => (
+                <TRow key={r.employee_id} flag={r.calc.late ? 'warning' : null}>
+                  <TD className={i === 0 ? 'font-semibold' : 'text-ink-tertiary'}>
+                    {i === 0 ? `${area} (${rows.length})` : ''}
+                  </TD>
+                  <TD>
+                    <span className="tnum font-semibold">#{r.employee_number}</span>{' '}
+                    <span className="font-medium">{r.full_name}</span>
+                  </TD>
+                  <TD>
+                    <span className="inline-flex gap-1.5">
+                      <StatusBadge status={r.calc.state === 'meal' ? 'comida' : 'adentro'} />
+                      {r.calc.late && <StatusBadge status="retardo" />}
+                    </span>
+                  </TD>
+                  <TD num>{fmtTime(r.calc.shift_in)}</TD>
+                </TRow>
+              ))
+            )}
+          </tbody>
+        </Table>
       )}
 
       {(lates.length > 0 || anomalies.length > 0) && (
-        <div className="mt-8 grid gap-4 md:grid-cols-2">
+        <div className="mt-6 grid gap-4 lg:grid-cols-2">
           {lates.length > 0 && (
-            <div className="rounded-xl border border-line bg-card p-4">
-              <h3 className="font-bold text-warn">Retardos del día</h3>
-              <ul className="mt-2 divide-y divide-line text-sm">
+            <div className="rounded-card border border-line bg-raised p-5 shadow-card">
+              <h3 className="mb-2 text-14 font-semibold">Retardos del día</h3>
+              <ul className="divide-y divide-line">
                 {lates.map((r) => (
-                  <li key={r.employee_id} className="flex justify-between py-1.5">
-                    <span className="font-semibold">
-                      #{r.employee_number} {r.full_name}
+                  <li key={r.employee_id} className="flex items-center justify-between py-2 text-14">
+                    <span>
+                      <span className="tnum font-semibold">#{r.employee_number}</span> {r.full_name}
                     </span>
-                    <span className="tabular-nums text-ink-soft">
-                      {fmtTime(r.calc.shift_in)} (+{r.calc.late_minutes} min)
+                    <span className="tnum text-ink-secondary">
+                      {fmtTime(r.calc.shift_in)} <span className="text-warning">(+{r.calc.late_minutes} min)</span>
                     </span>
                   </li>
                 ))}
@@ -132,21 +150,25 @@ export default function DashboardPage() {
             </div>
           )}
           {anomalies.length > 0 && (
-            <div className="rounded-xl border border-line bg-card p-4">
-              <h3 className="font-bold text-bad">Anomalías pendientes</h3>
-              <ul className="mt-2 divide-y divide-line text-sm">
+            <div className="rounded-card border border-line bg-raised p-5 shadow-card">
+              <h3 className="mb-2 text-14 font-semibold">Anomalías pendientes</h3>
+              <ul className="divide-y divide-line">
                 {anomalies.map((r) => (
-                  <li key={r.employee_id} className="py-1.5">
-                    <span className="font-semibold">
-                      #{r.employee_number} {r.full_name}
+                  <li key={r.employee_id} className="py-2 text-14">
+                    <span className="tnum font-semibold">#{r.employee_number}</span>{' '}
+                    <span className="font-medium">{r.full_name}</span>
+                    <span className="block text-13 text-ink-secondary">
+                      {r.calc.anomalies.map((a) => a.detail).join('; ')}
                     </span>
-                    <span className="text-ink-soft"> — {r.calc.anomalies.map((a) => a.detail).join('; ')}</span>
                   </li>
                 ))}
               </ul>
-              <Link to="/attendance" className="mt-3 inline-block text-sm font-bold text-wine-600 hover:underline">
-                Ir a Asistencia para corregir →
-              </Link>
+              <button
+                onClick={() => navigate('/attendance')}
+                className="mt-2 text-13 font-medium text-accent hover:text-accent-hover"
+              >
+                Corregir en Asistencia →
+              </button>
             </div>
           )}
         </div>
@@ -155,12 +177,28 @@ export default function DashboardPage() {
   );
 }
 
-function Stat({ label, value, tone }: { label: string; value: number; tone?: 'ok' | 'warn' | 'bad' }) {
-  const toneCls = tone === 'ok' ? 'text-ok' : tone === 'warn' ? 'text-warn' : tone === 'bad' ? 'text-bad' : 'text-ink';
+function scrollToTable(): void {
+  document.getElementById('live-table')?.scrollIntoView({ block: 'start' });
+}
+
+function Kpi({
+  label,
+  value,
+  tone,
+  onClick,
+}: {
+  label: string;
+  value: number;
+  tone: string;
+  onClick: () => void;
+}) {
   return (
-    <div className="rounded-xl border border-line bg-card p-4">
-      <div className={`text-3xl font-extrabold tabular-nums ${toneCls}`}>{value}</div>
-      <div className="mt-1 text-sm font-semibold text-ink-soft">{label}</div>
-    </div>
+    <button
+      onClick={onClick}
+      className="rounded-card border border-line bg-raised p-5 text-left shadow-card transition-colors duration-150 hover:border-line-strong"
+    >
+      <span className={`block font-display text-40 font-bold tnum ${tone}`}>{value}</span>
+      <span className="mt-1 block text-13 font-medium text-ink-secondary">{label}</span>
+    </button>
   );
 }

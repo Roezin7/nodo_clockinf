@@ -10,7 +10,9 @@
       "Skill(run)",
       "Skill(run:*)",
       "Read(//Users/arturohernandez/.cache/**)",
-      "Bash(node -e \"require.resolve\\('playwright'\\)\")"
+      "Bash(node -e \"require.resolve\\('playwright'\\)\")",
+      "Bash(npm ls *)",
+      "Bash(node -e \"const p=require\\('./node_modules/lucide-react/package.json'\\); console.log\\(p.version\\)\")"
     ]
   }
 }

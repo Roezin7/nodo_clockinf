@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { Check, Delete, X } from 'lucide-react';
 import type { PunchIngestResponse, PunchType } from '@clockai/shared';
 
 /**
- * Kiosco para tablet en modo retrato. Flujo: número de empleado → PIN de 4
- * dígitos → foto automática → confirmación 3s → reset. Optimizado para fila:
- * la checada se confirma sin esperar la foto; la foto se sube en background
- * con cola de reintentos en localStorage.
+ * Kiosco para tablet en modo retrato — modo oscuro para reducir
+ * deslumbramiento a las 6 AM. Flujo: número de empleado → PIN → foto
+ * automática → confirmación 3s → reset. La checada se confirma sin esperar
+ * la foto; la foto se sube en background con cola de reintentos.
  *
  * Token de dispositivo: /kiosk?token=XYZ lo guarda en localStorage.
  */
@@ -127,7 +128,7 @@ export default function KioskPage() {
     setBusy(false);
   }, []);
 
-  // Auto-reset de confirmación / error
+  // Auto-reset de confirmación / error / countdown de bloqueo
   useEffect(() => {
     if (step.name === 'confirm' || step.name === 'error') {
       const t = setTimeout(reset, step.name === 'confirm' ? 3000 : 4000);
@@ -213,12 +214,12 @@ export default function KioskPage() {
 
   if (!token) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-ink p-8 text-center text-white">
+      <div className="flex min-h-screen items-center justify-center bg-kiosk-bg p-8 text-center text-kiosk-ink">
         <div>
-          <h1 className="text-3xl font-extrabold">Kiosco sin configurar</h1>
-          <p className="mt-4 text-lg opacity-70">
-            Abre <code className="rounded bg-white/10 px-2 py-1">/kiosk?token=TOKEN_DEL_DISPOSITIVO</code> una vez
-            para registrar esta tablet.
+          <h1 className="font-display text-28 font-bold">Kiosco sin configurar</h1>
+          <p className="mt-4 text-16 text-kiosk-ink-dim">
+            Abre <code className="rounded-control bg-kiosk-raised px-2 py-1">/kiosk?token=TOKEN</code> una vez para
+            registrar esta tablet.
           </p>
         </div>
       </div>
@@ -226,18 +227,18 @@ export default function KioskPage() {
   }
 
   return (
-    <div className="flex min-h-screen flex-col bg-surface select-none">
-      {/* Cámara: preview pequeño, siempre activa */}
+    <div className="flex min-h-screen select-none flex-col bg-kiosk-bg text-kiosk-ink">
+      {/* Header mínimo: identidad + preview de cámara. Cero cromo de navegación. */}
       <div className="flex items-center justify-between px-6 pt-4">
-        <span className="text-xl font-extrabold tracking-tight text-wine-600">
-          NODO <span className="font-medium text-ink">CLOCK-IN</span>
+        <span className="font-display text-18 font-bold text-kiosk-ink-dim">
+          NODO <span className="font-semibold">Clock-In</span>
         </span>
         <video
           ref={videoRef}
           autoPlay
           muted
           playsInline
-          className="h-20 w-28 rounded-xl border border-line object-cover"
+          className="h-20 w-28 rounded-card border border-kiosk-line object-cover"
           style={{ transform: 'scaleX(-1)' }}
         />
       </div>
@@ -246,52 +247,61 @@ export default function KioskPage() {
         <Confirmation result={step.result} />
       ) : step.name === 'locked' ? (
         <div className="flex flex-1 flex-col items-center justify-center px-8 text-center">
-          <div className="text-7xl">⏳</div>
-          <h1 className="mt-6 text-4xl font-extrabold text-bad">Demasiados intentos</h1>
-          <p className="mt-4 text-2xl text-ink-soft">
-            Espera <span className="font-extrabold tabular-nums text-ink">{step.seconds}</span> segundos
+          <h1 className="font-display text-40 font-bold text-danger">Demasiados intentos</h1>
+          <p className="mt-6 text-28 text-kiosk-ink-dim">
+            Espera <span className="tnum font-display font-bold text-kiosk-ink">{step.seconds}</span> segundos
           </p>
         </div>
       ) : step.name === 'error' ? (
         <div className="flex flex-1 flex-col items-center justify-center px-8 text-center">
-          <div className="text-7xl">⚠️</div>
-          <h1 className="mt-6 text-4xl font-extrabold text-bad">{step.message}</h1>
+          <div className="flex h-20 w-20 items-center justify-center rounded-full bg-danger">
+            <X size={44} strokeWidth={2.5} className="text-kiosk-ink" />
+          </div>
+          <h1 className="mt-8 font-display text-40 font-bold">{step.message}</h1>
         </div>
       ) : (
-        <div className="flex flex-1 flex-col items-center justify-center gap-6 px-6 pb-8">
-          <h1 className="text-3xl font-bold text-ink-soft">
+        <div className="flex flex-1 flex-col items-center justify-center gap-6 px-6 pb-10">
+          <h1 className="text-22 font-semibold text-kiosk-ink-dim">
             {step.name === 'number' ? 'Número de empleado' : 'PIN'}
           </h1>
 
           {step.name === 'number' ? (
-            <div className="flex h-24 min-w-64 items-center justify-center rounded-2xl border-2 border-line bg-card px-8 text-6xl font-extrabold tabular-nums tracking-widest">
-              {numberInput || <span className="text-line">—</span>}
+            <div className="tnum flex h-24 min-w-72 items-center justify-center rounded-card border border-kiosk-line bg-kiosk-raised px-8 font-display text-64 font-bold tracking-widest">
+              {numberInput || <span className="text-kiosk-line">···</span>}
             </div>
           ) : (
-            <div className="flex h-24 items-center justify-center gap-5">
+            <div className="flex h-24 items-center justify-center gap-6">
               {[0, 1, 2, 3].map((i) => (
                 <div
                   key={i}
-                  className={`h-8 w-8 rounded-full border-2 ${
-                    i < pinInput.length ? 'border-wine-600 bg-wine-600' : 'border-line bg-card'
+                  className={`h-6 w-6 rounded-full border-2 ${
+                    i < pinInput.length ? 'border-kiosk-ink bg-kiosk-ink' : 'border-kiosk-line bg-transparent'
                   }`}
                 />
               ))}
             </div>
           )}
 
-          {step.name === 'pin' && step.error && (
-            <p className="text-2xl font-bold text-bad">{step.error}</p>
-          )}
-          {busy && <p className="text-2xl font-bold text-ink-soft">Registrando…</p>}
+          <p
+            className={`h-8 text-22 font-semibold ${
+              step.name === 'pin' && step.error ? 'text-danger' : 'text-kiosk-ink-dim'
+            }`}
+            role={step.name === 'pin' && step.error ? 'alert' : undefined}
+          >
+            {step.name === 'pin' && step.error ? step.error : busy ? 'Registrando…' : ''}
+          </p>
 
-          {/* Teclado: touch targets ≥64px (funciona con guantes) */}
-          <div className="grid w-full max-w-md grid-cols-3 gap-3">
+          {/* Teclado: teclas de 88px, funciona con guantes */}
+          <div className="grid w-full max-w-sm grid-cols-3 gap-3">
             {['1', '2', '3', '4', '5', '6', '7', '8', '9'].map((d) => (
-              <Key key={d} onPress={() => pressDigit(d)} label={d} />
+              <Key key={d} onPress={() => pressDigit(d)}>
+                {d}
+              </Key>
             ))}
-            <Key onPress={pressBack} label="⌫" muted />
-            <Key onPress={() => pressDigit('0')} label="0" />
+            <Key onPress={pressBack} muted aria-label="Borrar">
+              <Delete size={32} strokeWidth={1.5} />
+            </Key>
+            <Key onPress={() => pressDigit('0')}>0</Key>
             {step.name === 'number' ? (
               <button
                 disabled={!numberInput}
@@ -299,12 +309,14 @@ export default function KioskPage() {
                   setStep({ name: 'pin', employeeNumber: numberInput });
                   setPinInput('');
                 }}
-                className="h-20 rounded-2xl bg-wine-600 text-2xl font-extrabold text-white active:bg-wine-700 disabled:opacity-30"
+                className="flex h-22 items-center justify-center rounded-card bg-accent font-display text-28 font-bold text-kiosk-ink transition-colors duration-150 active:bg-accent-hover disabled:opacity-45"
               >
                 OK
               </button>
             ) : (
-              <Key onPress={reset} label="✕" muted />
+              <Key onPress={reset} muted aria-label="Cancelar">
+                <X size={32} strokeWidth={1.5} />
+              </Key>
             )}
           </div>
         </div>
@@ -313,15 +325,28 @@ export default function KioskPage() {
   );
 }
 
-function Key({ label, onPress, muted }: { label: string; onPress: () => void; muted?: boolean }) {
+function Key({
+  children,
+  onPress,
+  muted,
+  ...rest
+}: {
+  children: React.ReactNode;
+  onPress: () => void;
+  muted?: boolean;
+  'aria-label'?: string;
+}) {
   return (
     <button
       onClick={onPress}
-      className={`h-20 rounded-2xl border text-4xl font-extrabold active:scale-95 ${
-        muted ? 'border-line bg-surface text-ink-soft' : 'border-line bg-card text-ink active:bg-wine-50'
+      className={`flex h-22 items-center justify-center rounded-card border font-display text-40 font-bold transition-transform duration-150 active:scale-95 ${
+        muted
+          ? 'border-kiosk-line bg-transparent text-kiosk-ink-dim'
+          : 'border-kiosk-line bg-kiosk-raised text-kiosk-ink active:bg-kiosk-line'
       }`}
+      {...rest}
     >
-      {label}
+      {children}
     </button>
   );
 }
@@ -329,13 +354,16 @@ function Key({ label, onPress, muted }: { label: string; onPress: () => void; mu
 function Confirmation({ result }: { result: PunchIngestResponse }) {
   // La hora la formatea el SERVIDOR en la zona de la planta (punched_at_local):
   // el kiosco nunca usa el reloj/zona del dispositivo para mostrarla.
-  const time = result.punched_at_local;
   return (
-    <div className="flex flex-1 flex-col items-center justify-center bg-ok/5 px-8 text-center">
-      <div className="flex h-24 w-24 items-center justify-center rounded-full bg-ok text-5xl text-white">✓</div>
-      <h1 className="mt-8 text-5xl font-extrabold leading-tight">{result.employee_name}</h1>
-      <p className="mt-6 text-4xl font-extrabold text-wine-600">{TYPE_LABELS[result.punch_type_inferred]}</p>
-      <p className="mt-4 text-6xl font-extrabold tabular-nums">{time}</p>
+    <div className="flex flex-1 flex-col items-center justify-center px-8 text-center">
+      <div className="kiosk-check flex h-24 w-24 items-center justify-center rounded-full bg-success">
+        <Check size={52} strokeWidth={3} className="text-kiosk-ink" />
+      </div>
+      <h1 className="mt-10 font-display text-40 font-bold leading-tight">{result.employee_name}</h1>
+      <p className="mt-5 font-display text-28 font-bold text-kiosk-ink-dim">
+        {TYPE_LABELS[result.punch_type_inferred]}
+      </p>
+      <p className="tnum mt-4 font-display text-64 font-bold">{result.punched_at_local}</p>
     </div>
   );
 }

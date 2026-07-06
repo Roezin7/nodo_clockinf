@@ -1,10 +1,28 @@
 import { useCallback, useEffect, useState } from 'react';
+import { CalendarCheck } from 'lucide-react';
 import type { AttendanceDayResponse, DayDetailPunch, DayDetailRow, PunchType } from '@clockai/shared';
 import { api, ApiError } from '../api';
 import { useAuth } from '../hooks/useAuth';
-import { Modal } from './EmployeesPage';
 import { PUNCH_TYPE_LABELS } from '../components/PunchHistoryModal';
 import { fmtTime, todayLocal, useAppTimezone } from '../time';
+import { PageHeader } from '../components/layout/PageHeader';
+import {
+  Button,
+  EmptyState,
+  Field,
+  Input,
+  Modal,
+  Select,
+  StatusBadge,
+  Table,
+  TableSkeleton,
+  TD,
+  Textarea,
+  TH,
+  THead,
+  TRow,
+  useToast,
+} from '../components/ui';
 
 function fmtMinutes(min: number): string {
   return `${Math.floor(min / 60)}:${String(min % 60).padStart(2, '0')}`;
@@ -12,8 +30,6 @@ function fmtMinutes(min: number): string {
 
 interface CorrectionState {
   row: DayDetailRow;
-  /** Checada a anular (opcional: una corrección puede solo agregar). */
-  target?: DayDetailPunch;
 }
 
 export default function AttendancePage() {
@@ -34,102 +50,96 @@ export default function AttendancePage() {
   }, [load]);
 
   return (
-    <div className="p-6">
-      <div className="flex flex-wrap items-center gap-3">
-        <h1 className="text-2xl font-bold">Asistencia diaria</h1>
-        <div className="flex-1" />
-        <input
-          type="date"
-          value={date}
-          onChange={(e) => setDate(e.target.value)}
-          className="rounded-lg border border-line bg-card px-3 py-2 text-sm outline-none focus:border-wine-500"
-        />
-      </div>
+    <div>
+      <PageHeader
+        title="Asistencia diaria"
+        actions={
+          <Input
+            type="date"
+            value={date}
+            onChange={(e) => setDate(e.target.value)}
+            className="w-44"
+            aria-label="Fecha"
+          />
+        }
+      />
 
       {!data ? (
-        <p className="mt-6 text-ink-soft">Cargando…</p>
+        <TableSkeleton rows={8} cols={6} />
       ) : !data.rows.length ? (
-        <p className="mt-6 text-ink-soft">Sin checadas el {date}.</p>
-      ) : (
-        <div className="mt-4 overflow-x-auto rounded-xl border border-line bg-card">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-line text-left text-xs font-bold uppercase tracking-wide text-ink-soft">
-                <th className="px-4 py-3">Empleado</th>
-                <th className="px-4 py-3">Turno / Área</th>
-                <th className="px-4 py-3">Checadas</th>
-                <th className="px-4 py-3">Comida</th>
-                <th className="px-4 py-3">Horas</th>
-                <th className="px-4 py-3">Flags</th>
-                {isAdmin && <th className="px-4 py-3 text-right">Corregir</th>}
-              </tr>
-            </thead>
-            <tbody>
-              {data.rows.map((row) => (
-                <tr key={row.employee_id} className="border-b border-line align-top last:border-0 hover:bg-surface">
-                  <td className="px-4 py-3">
-                    <span className="font-bold tabular-nums">#{row.employee_number}</span>{' '}
-                    <span className="font-semibold">{row.full_name}</span>
-                  </td>
-                  <td className="px-4 py-3 text-ink-soft">
-                    {row.shift_name ?? '—'}
-                    {row.area_name ? ` · ${row.area_name}` : ''}
-                  </td>
-                  <td className="px-4 py-3">
-                    <div className="flex flex-wrap gap-1.5">
-                      {row.punches.map((p) => (
-                        <span
-                          key={p.id}
-                          title={p.correction_reason ?? undefined}
-                          className={`rounded-lg border px-2 py-0.5 text-xs font-semibold tabular-nums ${
-                            p.voided
-                              ? 'border-line text-ink-soft line-through opacity-50'
-                              : p.source === 'manual'
-                                ? 'border-wine-500 bg-wine-50 text-wine-700'
-                                : 'border-line bg-surface'
-                          }`}
-                        >
-                          {PUNCH_TYPE_LABELS[p.punch_type]} {fmtTime(p.punched_at)}
-                        </span>
-                      ))}
-                    </div>
-                  </td>
-                  <td className="px-4 py-3 tabular-nums">{row.calc.meal_minutes} min</td>
-                  <td className="px-4 py-3 font-bold tabular-nums">{fmtMinutes(row.calc.worked_minutes)}</td>
-                  <td className="px-4 py-3">
-                    <div className="flex flex-wrap gap-1">
-                      {row.calc.late && (
-                        <span className="rounded-full bg-bad/10 px-2 py-0.5 text-xs font-bold text-bad">
-                          Retardo +{row.calc.late_minutes}m
-                        </span>
-                      )}
-                      {!row.calc.complete && (
-                        <span className="rounded-full bg-warn/10 px-2 py-0.5 text-xs font-bold text-warn">
-                          Incompleto
-                        </span>
-                      )}
-                      {row.calc.anomalies.map((a, i) => (
-                        <span key={i} title={a.detail} className="rounded-full bg-bad/10 px-2 py-0.5 text-xs font-bold text-bad">
-                          {a.type}
-                        </span>
-                      ))}
-                    </div>
-                  </td>
-                  {isAdmin && (
-                    <td className="px-4 py-3 text-right">
-                      <button
-                        onClick={() => setCorrection({ row })}
-                        className="rounded-lg border border-line px-2.5 py-1 text-xs font-semibold hover:bg-surface"
-                      >
-                        Corregir
-                      </button>
-                    </td>
-                  )}
-                </tr>
-              ))}
-            </tbody>
-          </table>
+        <div className="rounded-card border border-line bg-raised shadow-card">
+          <EmptyState icon={CalendarCheck} title={`Sin checadas el ${date}.`} />
         </div>
+      ) : (
+        <Table>
+          <THead>
+            <tr>
+              <TH>Empleado</TH>
+              <TH>Turno / Área</TH>
+              <TH>Checadas</TH>
+              <TH num>Comida</TH>
+              <TH num>Horas</TH>
+              <TH>Estado</TH>
+              {isAdmin && <TH className="text-right">Corrección</TH>}
+            </tr>
+          </THead>
+          <tbody>
+            {data.rows.map((row) => (
+              <TRow
+                key={row.employee_id}
+                flag={!row.calc.complete ? 'danger' : row.calc.late ? 'warning' : null}
+              >
+                <TD>
+                  <span className="tnum font-semibold">#{row.employee_number}</span>{' '}
+                  <span className="font-medium">{row.full_name}</span>
+                </TD>
+                <TD className="text-ink-secondary">
+                  {row.shift_name ?? '—'}
+                  {row.area_name ? ` · ${row.area_name}` : ''}
+                </TD>
+                <TD className="whitespace-normal">
+                  <div className="flex max-w-md flex-wrap gap-1.5 py-0.5">
+                    {row.punches.map((p) => (
+                      <span
+                        key={p.id}
+                        title={p.correction_reason ?? undefined}
+                        className={`tnum inline-flex items-center rounded-control border px-1.5 py-0.5 text-12 font-medium ${
+                          p.voided
+                            ? 'border-line text-ink-tertiary line-through'
+                            : p.source === 'manual'
+                              ? 'border-accent-subtle bg-accent-subtle text-accent'
+                              : 'border-line bg-sunken text-ink-secondary'
+                        }`}
+                      >
+                        {PUNCH_TYPE_LABELS[p.punch_type]} {fmtTime(p.punched_at)}
+                      </span>
+                    ))}
+                  </div>
+                </TD>
+                <TD num className="text-ink-secondary">{row.calc.meal_minutes} min</TD>
+                <TD num className="font-semibold">{fmtMinutes(row.calc.worked_minutes)}</TD>
+                <TD>
+                  <span className="inline-flex flex-wrap gap-1.5">
+                    {row.calc.late && <StatusBadge status="retardo" />}
+                    {!row.calc.complete && <StatusBadge status="incompleto" />}
+                    {row.calc.complete && !row.calc.late && row.calc.state === 'out' && (
+                      <StatusBadge status="salio" />
+                    )}
+                    {row.calc.state === 'in' && <StatusBadge status="adentro" />}
+                    {row.calc.state === 'meal' && <StatusBadge status="comida" />}
+                  </span>
+                </TD>
+                {isAdmin && (
+                  <TD className="text-right">
+                    <Button variant="secondary" size="sm" onClick={() => setCorrection({ row })}>
+                      Corregir
+                    </Button>
+                  </TD>
+                )}
+              </TRow>
+            ))}
+          </tbody>
+        </Table>
       )}
 
       {correction && (
@@ -158,6 +168,7 @@ function CorrectionModal({
   onDone: () => void;
   onClose: () => void;
 }) {
+  const toast = useToast();
   const { row } = state;
   const [mode, setMode] = useState<'add' | 'void'>('add');
   const [punchType, setPunchType] = useState<PunchType>('shift_out');
@@ -166,9 +177,9 @@ function CorrectionModal({
   const [reason, setReason] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const activePunches = row.punches.filter((p) => !p.voided);
+  const activePunches = row.punches.filter((p: DayDetailPunch) => !p.voided);
 
-  async function submit() {
+  async function submit(): Promise<void> {
     setBusy(true);
     setError(null);
     try {
@@ -184,8 +195,10 @@ function CorrectionModal({
             correction_of: targetId || null,
           }),
         });
+        toast('Checada manual agregada');
       } else {
         await api(`/api/punches/${targetId}/void`, { method: 'POST', body: JSON.stringify({ reason }) });
+        toast('Checada anulada');
       }
       onDone();
     } catch (err) {
@@ -194,94 +207,97 @@ function CorrectionModal({
     }
   }
 
-  const inputCls = 'w-full rounded-lg border border-line bg-surface px-3 py-2 text-sm outline-none focus:border-wine-500';
-
   return (
-    <Modal title={`Corrección — #${row.employee_number} ${row.full_name} (${date})`} onClose={onClose}>
-      <div className="grid gap-3">
-        <div className="flex gap-2">
-          <button
+    <Modal
+      title={`Corrección — #${row.employee_number} ${row.full_name} (${date})`}
+      onClose={onClose}
+      footer={
+        <>
+          <Button variant="secondary" onClick={onClose}>
+            Cancelar
+          </Button>
+          <Button
+            onClick={() => void submit()}
+            loading={busy}
+            disabled={reason.trim().length < 3 || (mode === 'void' && !targetId)}
+          >
+            Guardar corrección
+          </Button>
+        </>
+      }
+    >
+      <div className="grid gap-1">
+        <div className="mb-3 flex gap-2" role="tablist">
+          <Button
+            variant={mode === 'add' ? 'primary' : 'secondary'}
+            size="sm"
             onClick={() => setMode('add')}
-            className={`flex-1 rounded-lg border px-3 py-2 text-sm font-bold ${mode === 'add' ? 'border-wine-500 bg-wine-50 text-wine-700' : 'border-line'}`}
+            role="tab"
+            aria-selected={mode === 'add'}
           >
             Agregar checada
-          </button>
-          <button
+          </Button>
+          <Button
+            variant={mode === 'void' ? 'primary' : 'secondary'}
+            size="sm"
             onClick={() => {
               setMode('void');
               setTargetId(activePunches[0]?.id ?? '');
             }}
-            className={`flex-1 rounded-lg border px-3 py-2 text-sm font-bold ${mode === 'void' ? 'border-wine-500 bg-wine-50 text-wine-700' : 'border-line'}`}
+            role="tab"
+            aria-selected={mode === 'void'}
           >
             Anular checada
-          </button>
+          </Button>
         </div>
 
         {mode === 'add' ? (
           <>
-            <div className="grid grid-cols-2 gap-3">
-              <label className="block">
-                <span className="mb-1 block text-sm font-semibold">Tipo</span>
-                <select className={inputCls} value={punchType} onChange={(e) => setPunchType(e.target.value as PunchType)}>
+            <div className="grid grid-cols-2 gap-4">
+              <Field label="Tipo" required>
+                <Select value={punchType} onChange={(e) => setPunchType(e.target.value as PunchType)}>
                   {Object.entries(PUNCH_TYPE_LABELS).map(([value, label]) => (
-                    <option key={value} value={value}>{label}</option>
+                    <option key={value} value={value}>
+                      {label}
+                    </option>
                   ))}
-                </select>
-              </label>
-              <label className="block">
-                <span className="mb-1 block text-sm font-semibold">Hora (local planta)</span>
-                <input type="time" className={inputCls} value={time} onChange={(e) => setTime(e.target.value)} />
-              </label>
+                </Select>
+              </Field>
+              <Field label="Hora (local planta)" required>
+                <Input type="time" value={time} onChange={(e) => setTime(e.target.value)} />
+              </Field>
             </div>
-            <label className="block">
-              <span className="mb-1 block text-sm font-semibold">Anular también una checada existente (opcional)</span>
-              <select className={inputCls} value={targetId} onChange={(e) => setTargetId(e.target.value)}>
+            <Field label="Anular también una checada existente" hint="Opcional">
+              <Select value={targetId} onChange={(e) => setTargetId(e.target.value)}>
                 <option value="">— No anular ninguna —</option>
                 {activePunches.map((p) => (
                   <option key={p.id} value={p.id}>
                     {PUNCH_TYPE_LABELS[p.punch_type]} {fmtTime(p.punched_at)}
                   </option>
                 ))}
-              </select>
-            </label>
+              </Select>
+            </Field>
           </>
         ) : (
-          <label className="block">
-            <span className="mb-1 block text-sm font-semibold">Checada a anular</span>
-            <select className={inputCls} value={targetId} onChange={(e) => setTargetId(e.target.value)}>
+          <Field label="Checada a anular" required>
+            <Select value={targetId} onChange={(e) => setTargetId(e.target.value)}>
               {activePunches.map((p) => (
                 <option key={p.id} value={p.id}>
                   {PUNCH_TYPE_LABELS[p.punch_type]} {fmtTime(p.punched_at)}
                 </option>
               ))}
-            </select>
-          </label>
+            </Select>
+          </Field>
         )}
 
-        <label className="block">
-          <span className="mb-1 block text-sm font-semibold">Razón (obligatoria)</span>
-          <textarea
-            className={inputCls}
+        <Field label="Razón" required error={error}>
+          <Textarea
             rows={2}
             value={reason}
             onChange={(e) => setReason(e.target.value)}
             placeholder="Ej.: Empleado olvidó checar salida; confirmado con supervisor"
           />
-        </label>
-
-        {error && <p className="text-sm font-semibold text-bad">{error}</p>}
-        <div className="mt-1 flex justify-end gap-2">
-          <button onClick={onClose} className="rounded-lg border border-line px-4 py-2 text-sm font-semibold hover:bg-surface">
-            Cancelar
-          </button>
-          <button
-            onClick={() => void submit()}
-            disabled={busy || reason.trim().length < 3 || (mode === 'void' && !targetId)}
-            className="rounded-lg bg-wine-600 px-4 py-2 text-sm font-bold text-white hover:bg-wine-700 disabled:opacity-50"
-          >
-            {busy ? 'Guardando…' : 'Guardar corrección'}
-          </button>
-        </div>
+        </Field>
       </div>
     </Modal>
   );

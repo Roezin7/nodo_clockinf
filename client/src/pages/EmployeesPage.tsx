@@ -1,8 +1,28 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Users } from 'lucide-react';
 import type { Employee, Shift } from '@clockai/shared';
 import { api, ApiError } from '../api';
 import { useAuth } from '../hooks/useAuth';
 import PunchHistoryModal from '../components/PunchHistoryModal';
+import { PageHeader } from '../components/layout/PageHeader';
+import {
+  Button,
+  EmptyState,
+  Field,
+  Input,
+  Modal,
+  Pagination,
+  Select,
+  StatusBadge,
+  Table,
+  TableSkeleton,
+  TD,
+  TH,
+  THead,
+  TRow,
+  useToast,
+  type SortDir,
+} from '../components/ui';
 
 type EmployeeWithPin = Employee & { pin?: string };
 
@@ -15,18 +35,24 @@ interface FormState {
 }
 
 const EMPTY_FORM: FormState = { full_name: '', social_security: '', phone: '', default_shift_id: '', hired_at: '' };
+const PAGE_SIZE = 100;
 
 export default function EmployeesPage() {
   const user = useAuth();
+  const toast = useToast();
   const isAdmin = user?.role === 'admin';
-  const [employees, setEmployees] = useState<Employee[]>([]);
+  const [employees, setEmployees] = useState<Employee[] | null>(null);
   const [shifts, setShifts] = useState<Shift[]>([]);
   const [search, setSearch] = useState('');
   const [showInactive, setShowInactive] = useState(false);
+  const [sortBy, setSortBy] = useState<'number' | 'name'>('number');
+  const [sortDir, setSortDir] = useState<Exclude<SortDir, null>>('asc');
+  const [page, setPage] = useState(1);
   const [editing, setEditing] = useState<Employee | 'new' | null>(null);
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
+  const [formError, setFormError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
   const [pinNotice, setPinNotice] = useState<{ name: string; number: number; pin: string } | null>(null);
-  const [error, setError] = useState<string | null>(null);
   const [history, setHistory] = useState<Employee | null>(null);
   const [photoFile, setPhotoFile] = useState<File | null>(null);
 
@@ -43,10 +69,35 @@ export default function EmployeesPage() {
   useEffect(() => {
     void api<Shift[]>('/api/shifts').then(setShifts);
   }, []);
+  useEffect(() => {
+    setPage(1);
+  }, [search, showInactive]);
 
-  function openEdit(emp: Employee | 'new') {
+  const sorted = useMemo(() => {
+    if (!employees) return null;
+    const list = [...employees].sort((a, b) =>
+      sortBy === 'number'
+        ? a.employee_number - b.employee_number
+        : a.full_name.localeCompare(b.full_name, 'es')
+    );
+    if (sortDir === 'desc') list.reverse();
+    return list;
+  }, [employees, sortBy, sortDir]);
+
+  const pageCount = Math.max(1, Math.ceil((sorted?.length ?? 0) / PAGE_SIZE));
+  const visible = sorted?.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+
+  function toggleSort(col: 'number' | 'name'): void {
+    if (sortBy === col) setSortDir(sortDir === 'asc' ? 'desc' : 'asc');
+    else {
+      setSortBy(col);
+      setSortDir('asc');
+    }
+  }
+
+  function openEdit(emp: Employee | 'new'): void {
     setEditing(emp);
-    setError(null);
+    setFormError(null);
     setPhotoFile(null);
     setForm(
       emp === 'new'
@@ -61,7 +112,9 @@ export default function EmployeesPage() {
     );
   }
 
-  async function save() {
+  async function save(): Promise<void> {
+    setSaving(true);
+    setFormError(null);
     const payload = {
       full_name: form.full_name,
       social_security: form.social_security || null,
@@ -80,182 +133,195 @@ export default function EmployeesPage() {
         if (created.pin) {
           setPinNotice({ name: created.full_name, number: created.employee_number, pin: created.pin });
         }
+        toast('Empleado dado de alta');
       } else if (editing) {
         employeeId = editing.id;
         await api(`/api/employees/${editing.id}`, { method: 'PATCH', body: JSON.stringify(payload) });
+        toast('Empleado actualizado');
       }
       if (employeeId && photoFile) {
-        const form = new FormData();
-        form.append('photo', photoFile);
-        await api(`/api/employees/${employeeId}/photo`, { method: 'POST', body: form });
+        const formData = new FormData();
+        formData.append('photo', photoFile);
+        await api(`/api/employees/${employeeId}/photo`, { method: 'POST', body: formData });
       }
       setEditing(null);
       await load();
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Error al guardar');
+      setFormError(err instanceof ApiError ? err.message : 'Error al guardar');
+    } finally {
+      setSaving(false);
     }
   }
 
-  async function resetPin(emp: Employee) {
+  async function resetPin(emp: Employee): Promise<void> {
     if (!confirm(`¿Generar un PIN nuevo para ${emp.full_name}? El anterior deja de funcionar.`)) return;
     const res = await api<{ pin: string }>(`/api/employees/${emp.id}/reset-pin`, { method: 'POST' });
     setPinNotice({ name: emp.full_name, number: emp.employee_number, pin: res.pin });
+    toast('PIN regenerado');
   }
 
-  async function toggleActive(emp: Employee) {
+  async function toggleActive(emp: Employee): Promise<void> {
     const action = emp.active ? 'deactivate' : 'reactivate';
     if (emp.active && !confirm(`¿Dar de baja a ${emp.full_name}?`)) return;
     await api(`/api/employees/${emp.id}/${action}`, { method: 'POST' });
+    toast(emp.active ? 'Empleado dado de baja' : 'Empleado reactivado');
     await load();
   }
 
-  const shiftName = (id: string | null) => shifts.find((s) => s.id === id)?.name ?? '—';
+  const shiftName = (id: string | null): string => shifts.find((s) => s.id === id)?.name ?? '—';
 
   return (
-    <div className="p-6">
-      <div className="flex flex-wrap items-center gap-3">
-        <h1 className="text-2xl font-bold">Empleados</h1>
-        <div className="flex-1" />
-        <input
-          placeholder="Buscar por nombre o número…"
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          className="w-64 rounded-lg border border-line bg-card px-3 py-2 text-sm outline-none focus:border-wine-500"
-        />
-        <label className="flex items-center gap-2 text-sm text-ink-soft">
-          <input type="checkbox" checked={showInactive} onChange={(e) => setShowInactive(e.target.checked)} />
-          Ver inactivos
-        </label>
-        {isAdmin && (
-          <button
-            onClick={() => openEdit('new')}
-            className="rounded-lg bg-wine-600 px-4 py-2 text-sm font-bold text-white hover:bg-wine-700"
-          >
-            + Alta de empleado
-          </button>
-        )}
-      </div>
+    <div>
+      <PageHeader
+        title="Empleados"
+        actions={
+          <>
+            <div className="w-64">
+              <Input
+                placeholder="Buscar por nombre o número"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                aria-label="Buscar empleados"
+              />
+            </div>
+            <label className="flex items-center gap-2 text-13 text-ink-secondary">
+              <input
+                type="checkbox"
+                checked={showInactive}
+                onChange={(e) => setShowInactive(e.target.checked)}
+                className="accent-accent"
+              />
+              Ver inactivos
+            </label>
+            {isAdmin && <Button onClick={() => openEdit('new')}>Dar de alta</Button>}
+          </>
+        }
+      />
 
-      <div className="mt-4 overflow-x-auto rounded-xl border border-line bg-card">
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="border-b border-line text-left text-xs font-bold uppercase tracking-wide text-ink-soft">
-              <th className="px-4 py-3">#</th>
-              <th className="px-4 py-3">Nombre</th>
-              <th className="px-4 py-3">Turno default</th>
-              <th className="px-4 py-3">Teléfono</th>
-              <th className="px-4 py-3">Alta</th>
-              <th className="px-4 py-3">Estado</th>
-              <th className="px-4 py-3 text-right">Acciones</th>
+      {!visible ? (
+        <TableSkeleton rows={8} cols={6} />
+      ) : !visible.length ? (
+        <div className="rounded-card border border-line bg-raised shadow-card">
+          <EmptyState
+            icon={Users}
+            title={search ? `Sin resultados para “${search}”.` : 'Aún no hay empleados.'}
+            action={isAdmin && !search ? { label: 'Dar de alta al primero', onClick: () => openEdit('new') } : undefined}
+          />
+        </div>
+      ) : (
+        <Table>
+          <THead>
+            <tr>
+              <TH num sortable sorted={sortBy === 'number' ? sortDir : null} onSort={() => toggleSort('number')}>
+                #
+              </TH>
+              <TH sortable sorted={sortBy === 'name' ? sortDir : null} onSort={() => toggleSort('name')}>
+                Nombre
+              </TH>
+              <TH>Turno</TH>
+              <TH>Teléfono</TH>
+              <TH num>Alta</TH>
+              <TH>Estado</TH>
+              <TH className="text-right">Acciones</TH>
             </tr>
-          </thead>
+          </THead>
           <tbody>
-            {employees.map((emp) => (
-              <tr key={emp.id} className="border-b border-line last:border-0 hover:bg-surface">
-                <td className="px-4 py-3 font-bold tabular-nums">{emp.employee_number}</td>
-                <td className="px-4 py-3 font-semibold">{emp.full_name}</td>
-                <td className="px-4 py-3">{shiftName(emp.default_shift_id)}</td>
-                <td className="px-4 py-3">{emp.phone ?? '—'}</td>
-                <td className="px-4 py-3 tabular-nums">{emp.hired_at ?? '—'}</td>
-                <td className="px-4 py-3">
-                  <span
-                    className={`rounded-full px-2 py-0.5 text-xs font-bold ${
-                      emp.active ? 'bg-wine-50 text-ok' : 'bg-surface text-ink-soft'
-                    }`}
-                  >
-                    {emp.active ? 'Activo' : 'Inactivo'}
-                  </span>
-                </td>
-                <td className="px-4 py-3 text-right">
-                  <div className="flex justify-end gap-2">
-                    <button onClick={() => setHistory(emp)} className="rounded-lg border border-line px-2.5 py-1 text-xs font-semibold hover:bg-surface">
+            {visible.map((emp) => (
+              <TRow key={emp.id}>
+                <TD num className="font-semibold">{emp.employee_number}</TD>
+                <TD className="font-medium">{emp.full_name}</TD>
+                <TD className="text-ink-secondary">{shiftName(emp.default_shift_id)}</TD>
+                <TD className="tnum text-ink-secondary">{emp.phone ?? '—'}</TD>
+                <TD num className="text-ink-secondary">{emp.hired_at ?? '—'}</TD>
+                <TD>
+                  <StatusBadge status={emp.active ? 'activo' : 'inactivo'} />
+                </TD>
+                <TD>
+                  <div className="flex justify-end gap-1.5">
+                    <Button variant="secondary" size="sm" onClick={() => setHistory(emp)}>
                       Checadas
-                    </button>
+                    </Button>
                     {isAdmin && (
                       <>
-                        <button onClick={() => openEdit(emp)} className="rounded-lg border border-line px-2.5 py-1 text-xs font-semibold hover:bg-surface">
+                        <Button variant="secondary" size="sm" onClick={() => openEdit(emp)}>
                           Editar
-                        </button>
-                        <button onClick={() => void resetPin(emp)} className="rounded-lg border border-line px-2.5 py-1 text-xs font-semibold hover:bg-surface">
-                          Reset PIN
-                        </button>
-                        <button
+                        </Button>
+                        <Button variant="secondary" size="sm" title="Generar PIN nuevo" onClick={() => void resetPin(emp)}>
+                          PIN
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          title={emp.active ? 'Dar de baja' : 'Reactivar'}
                           onClick={() => void toggleActive(emp)}
-                          className={`rounded-lg border border-line px-2.5 py-1 text-xs font-semibold hover:bg-surface ${emp.active ? 'text-bad' : 'text-ok'}`}
                         >
                           {emp.active ? 'Baja' : 'Reactivar'}
-                        </button>
+                        </Button>
                       </>
                     )}
                   </div>
-                </td>
-              </tr>
+                </TD>
+              </TRow>
             ))}
-            {!employees.length && (
-              <tr>
-                <td colSpan={7} className="px-4 py-10 text-center text-ink-soft">
-                  Sin empleados. {isAdmin ? 'Usa “Alta de empleado”.' : ''}
-                </td>
-              </tr>
-            )}
           </tbody>
-        </table>
-      </div>
+        </Table>
+      )}
+      {sorted && sorted.length > PAGE_SIZE && <Pagination page={page} pageCount={pageCount} onPage={setPage} />}
 
       {editing && (
-        <Modal title={editing === 'new' ? 'Alta de empleado' : `Editar — ${editing.full_name}`} onClose={() => setEditing(null)}>
-          <div className="grid gap-3">
-            <Field label="Nombre completo *">
-              <input className={inputCls} value={form.full_name} onChange={(e) => setForm({ ...form, full_name: e.target.value })} />
+        <Modal
+          title={editing === 'new' ? 'Dar de alta empleado' : `Editar — ${editing.full_name}`}
+          onClose={() => setEditing(null)}
+          footer={
+            <>
+              <Button variant="secondary" onClick={() => setEditing(null)}>
+                Cancelar
+              </Button>
+              <Button onClick={() => void save()} loading={saving} disabled={!form.full_name.trim()}>
+                {editing === 'new' ? 'Dar de alta' : 'Guardar cambios'}
+              </Button>
+            </>
+          }
+        >
+          <div className="grid gap-1">
+            <Field label="Nombre completo" required error={formError}>
+              <Input value={form.full_name} onChange={(e) => setForm({ ...form, full_name: e.target.value })} />
             </Field>
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-2 gap-4">
               <Field label="Número de seguro">
-                <input className={inputCls} value={form.social_security} onChange={(e) => setForm({ ...form, social_security: e.target.value })} />
+                <Input value={form.social_security} onChange={(e) => setForm({ ...form, social_security: e.target.value })} />
               </Field>
               <Field label="Teléfono">
-                <input className={inputCls} value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} />
+                <Input value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} />
               </Field>
             </div>
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-2 gap-4">
               <Field label="Turno default">
-                <select className={inputCls} value={form.default_shift_id} onChange={(e) => setForm({ ...form, default_shift_id: e.target.value })}>
+                <Select value={form.default_shift_id} onChange={(e) => setForm({ ...form, default_shift_id: e.target.value })}>
                   <option value="">— Sin turno —</option>
                   {shifts.map((s) => (
                     <option key={s.id} value={s.id}>
                       {s.name} ({s.start_time.slice(0, 5)}–{s.end_time.slice(0, 5)})
                     </option>
                   ))}
-                </select>
+                </Select>
               </Field>
               <Field label="Fecha de contratación">
-                <input type="date" className={inputCls} value={form.hired_at} onChange={(e) => setForm({ ...form, hired_at: e.target.value })} />
+                <Input type="date" value={form.hired_at} onChange={(e) => setForm({ ...form, hired_at: e.target.value })} />
               </Field>
             </div>
-            <Field label="Foto de enrolamiento (cámara o archivo)">
+            <Field
+              label="Foto de enrolamiento"
+              hint={editing === 'new' ? 'Al guardar se genera un PIN que se muestra una sola vez' : undefined}
+            >
               <input
                 type="file"
                 accept="image/*"
                 capture="user"
                 onChange={(e) => setPhotoFile(e.target.files?.[0] ?? null)}
-                className="w-full text-sm"
+                className="block w-full text-13 text-ink-secondary file:mr-3 file:h-8 file:cursor-pointer file:rounded-control file:border file:border-line file:bg-raised file:px-3 file:text-13 file:font-medium file:text-ink"
               />
             </Field>
-            {editing === 'new' && (
-              <p className="text-xs text-ink-soft">Al guardar se genera un PIN de 4 dígitos que se muestra una sola vez.</p>
-            )}
-            {error && <p className="text-sm font-semibold text-bad">{error}</p>}
-            <div className="mt-2 flex justify-end gap-2">
-              <button onClick={() => setEditing(null)} className="rounded-lg border border-line px-4 py-2 text-sm font-semibold hover:bg-surface">
-                Cancelar
-              </button>
-              <button
-                onClick={() => void save()}
-                disabled={!form.full_name.trim()}
-                className="rounded-lg bg-wine-600 px-4 py-2 text-sm font-bold text-white hover:bg-wine-700 disabled:opacity-50"
-              >
-                Guardar
-              </button>
-            </div>
           </div>
         </Modal>
       )}
@@ -263,44 +329,22 @@ export default function EmployeesPage() {
       {history && <PunchHistoryModal employee={history} onClose={() => setHistory(null)} />}
 
       {pinNotice && (
-        <Modal title="PIN generado" onClose={() => setPinNotice(null)}>
-          <p className="text-sm">
-            PIN para <strong>{pinNotice.name}</strong> (empleado #{pinNotice.number}). Anótalo o imprímelo:
-            <strong> no se volverá a mostrar.</strong>
+        <Modal
+          title="PIN generado"
+          size="sm"
+          onClose={() => setPinNotice(null)}
+          footer={<Button onClick={() => setPinNotice(null)}>Entendido</Button>}
+        >
+          <p className="text-14 text-ink-secondary">
+            PIN para <span className="font-semibold text-ink">{pinNotice.name}</span>{' '}
+            <span className="tnum">(#{pinNotice.number})</span>. Anótalo o imprímelo:{' '}
+            <span className="font-semibold text-ink">no se volverá a mostrar.</span>
           </p>
-          <div className="my-5 text-center font-mono text-5xl font-extrabold tracking-[0.3em] text-wine-600">
+          <p className="tnum my-5 text-center font-display text-40 font-bold tracking-[0.25em] text-accent">
             {pinNotice.pin}
-          </div>
-          <div className="flex justify-end">
-            <button onClick={() => setPinNotice(null)} className="rounded-lg bg-wine-600 px-4 py-2 text-sm font-bold text-white hover:bg-wine-700">
-              Entendido
-            </button>
-          </div>
+          </p>
         </Modal>
       )}
-    </div>
-  );
-}
-
-const inputCls =
-  'w-full rounded-lg border border-line bg-surface px-3 py-2 text-sm outline-none focus:border-wine-500';
-
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <label className="block">
-      <span className="mb-1 block text-sm font-semibold">{label}</span>
-      {children}
-    </label>
-  );
-}
-
-export function Modal({ title, onClose, children }: { title: string; onClose: () => void; children: React.ReactNode }) {
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/40 p-4" onClick={onClose}>
-      <div className="w-full max-w-lg rounded-2xl border border-line bg-card p-6 shadow-xl" onClick={(e) => e.stopPropagation()}>
-        <h2 className="mb-4 text-lg font-bold">{title}</h2>
-        {children}
-      </div>
     </div>
   );
 }

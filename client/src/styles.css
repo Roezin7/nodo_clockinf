@@ -1,26 +1,143 @@
 @import 'tailwindcss';
 
-/* Design system NODO: neutros cálidos + acento vino, Hanken Grotesk */
+/*
+ * Design tokens NODO CLOCK-IN — fuente única de verdad.
+ * Prohibido usar valores arbitrarios (mt-[13px], #hex inline) en componentes:
+ * si un valor no existe aquí, se agrega al sistema o no se usa.
+ */
 @theme {
-  --font-sans: 'Hanken Grotesk', system-ui, sans-serif;
+  /* ---- Tipografía ---- */
+  --font-sans: 'Inter', system-ui, sans-serif;
+  --font-display: 'Hanken Grotesk', 'Inter', system-ui, sans-serif;
 
-  --color-surface: #faf8f5;
-  --color-card: #ffffff;
-  --color-ink: #2b2622;
-  --color-ink-soft: #6f6660;
-  --color-line: #e8e2da;
+  /* Escala fija 12/13/14/16/18/22/28/40. Body 14px, 1.45; headings 1.2 */
+  --text-12: 12px;
+  --text-12--line-height: 1.45;
+  --text-13: 13px;
+  --text-13--line-height: 1.45;
+  --text-14: 14px;
+  --text-14--line-height: 1.45;
+  --text-16: 16px;
+  --text-16--line-height: 1.45;
+  --text-18: 18px;
+  --text-18--line-height: 1.2;
+  --text-22: 22px;
+  --text-22--line-height: 1.2;
+  --text-28: 28px;
+  --text-28--line-height: 1.2;
+  --text-40: 40px;
+  --text-40--line-height: 1.2;
+  /* Solo kiosco: legible a 1 metro */
+  --text-64: 64px;
+  --text-64--line-height: 1.1;
 
-  --color-wine-50: #fbf3f5;
-  --color-wine-100: #f5e1e7;
-  --color-wine-500: #8e2a48;
-  --color-wine-600: #7a2140;
-  --color-wine-700: #641a35;
+  /* ---- Neutros (base cálida NODO) ---- */
+  --color-page: #faf9f7;
+  --color-raised: #ffffff;
+  --color-sunken: #f1efeb;
+  --color-line: #e4e1db;
+  --color-line-strong: #c9c5bc;
 
-  --color-ok: #2f7d4f;
-  --color-warn: #b45309;
-  --color-bad: #b3261e;
+  --color-ink: #1c1b18;
+  --color-ink-secondary: #5c594f;
+  --color-ink-tertiary: #8b8778;
+
+  /* ---- Acento vino: acciones e identidad, uso quirúrgico ---- */
+  --color-accent: #722f37;
+  --color-accent-hover: #5e262d;
+  --color-accent-subtle: #f5ebec;
+
+  /* ---- Semánticos: estado de datos, nunca se mezclan con el acento ---- */
+  --color-success: #2d6a4f;
+  --color-success-subtle: #e8f2ed;
+  --color-warning: #9a6700;
+  --color-warning-subtle: #fbf0da;
+  --color-danger: #b3261e;
+  --color-danger-subtle: #f9e6e5;
+  --color-info: #3b5b8c;
+  --color-info-subtle: #e9eef5;
+
+  /* ---- Kiosco (modo oscuro industrial) ---- */
+  --color-kiosk-bg: #1c1b18;
+  --color-kiosk-raised: #2a2925;
+  --color-kiosk-line: #3d3b35;
+  --color-kiosk-ink: #f5f3ef;
+  --color-kiosk-ink-dim: #a5a193;
+
+  /* ---- Radios: 6 inputs/botones, 10 cards/modales, 999 badges ---- */
+  --radius-control: 6px;
+  --radius-card: 10px;
+
+  /* ---- Sombras: exactamente dos ---- */
+  --shadow-card: 0 1px 2px rgb(28 27 24 / 0.06);
+  --shadow-overlay: 0 8px 24px rgb(28 27 24 / 0.12);
 }
 
 body {
-  @apply bg-surface text-ink font-sans antialiased;
+  @apply bg-page font-sans text-14 text-ink antialiased;
+}
+
+/* Headings y números grandes: Hanken Grotesk */
+h1,
+h2,
+h3 {
+  @apply font-display;
+}
+
+/* Datos tabulares: los números SIEMPRE alinean verticalmente */
+.tnum {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Focus visible unificado: ring de 2px del acento con offset */
+:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+  border-radius: var(--radius-control);
+}
+
+/* Motion: 120–150ms ease-out en hover/focus; nada anima en scroll ni rebota */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* Shimmer de skeletons: sutil, sobre sunken */
+@keyframes shimmer {
+  from {
+    background-position: 200% 0;
+  }
+  to {
+    background-position: -200% 0;
+  }
+}
+.skeleton {
+  background: linear-gradient(
+    90deg,
+    var(--color-sunken) 40%,
+    var(--color-line) 50%,
+    var(--color-sunken) 60%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.6s linear infinite;
+}
+
+/* Check de confirmación del kiosco: única animación permitida ahí (300ms) */
+@keyframes kiosk-check {
+  from {
+    transform: scale(0.6);
+    opacity: 0;
+  }
+  to {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+.kiosk-check {
+  animation: kiosk-check 300ms ease-out;
 }
