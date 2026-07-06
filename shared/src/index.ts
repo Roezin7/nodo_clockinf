@@ -173,7 +173,8 @@ export interface WeekReport {
 export interface Settings {
   daily_ot_threshold_minutes: number;
   weekly_ot_threshold_minutes: number;
-  week_start_day: number; // 0=domingo … 6=sábado
+  week_start_day: number; // ISO: 1=lunes … 7=domingo
   photo_retention_weeks: number;
-  timezone: string;
+  duplicate_window_minutes: number;
+  work_days: number[]; // ISO 1=lunes … 7=domingo
 }

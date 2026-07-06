@@ -129,13 +129,22 @@ employeesRouter.patch('/:id', requireAdmin, async (req, res) => {
 });
 
 employeesRouter.post('/:id/deactivate', requireAdmin, async (req, res) => {
-  const row = await queryOne(
+  const row = await queryOne<{ enrollment_photo_key: string | null }>(
     `UPDATE employees SET active = false, deactivated_at = current_date
      WHERE id = $1 RETURNING ${PUBLIC_COLS}`,
     [req.params.id]
   );
   if (!row) throw notFound('Empleado no encontrado');
-  res.json(row);
+  // Retención: la foto de enrolamiento solo se conserva mientras esté activo
+  if (row.enrollment_photo_key) {
+    try {
+      await storage.remove(row.enrollment_photo_key);
+      await query(`UPDATE employees SET enrollment_photo_key = NULL WHERE id = $1`, [req.params.id]);
+    } catch (err) {
+      console.error('No se pudo borrar la foto de enrolamiento:', err);
+    }
+  }
+  res.json({ ...row, enrollment_photo_key: null });
 });
 
 employeesRouter.post('/:id/reactivate', requireAdmin, async (req, res) => {

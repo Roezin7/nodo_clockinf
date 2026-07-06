@@ -7,15 +7,7 @@ import KioskPage from './pages/KioskPage';
 import DashboardPage from './pages/DashboardPage';
 import AttendancePage from './pages/AttendancePage';
 import ReportsPage from './pages/ReportsPage';
-
-function Placeholder({ title }: { title: string }) {
-  return (
-    <div className="p-8">
-      <h1 className="text-2xl font-bold">{title}</h1>
-      <p className="mt-2 text-ink-soft">Disponible en una fase posterior.</p>
-    </div>
-  );
-}
+import SettingsPage from './pages/SettingsPage';
 
 const NAV = [
   { to: '/dashboard', label: 'Hoy' },
@@ -82,7 +74,7 @@ export default function App() {
       <Route path="/employees" element={<Shell><EmployeesPage /></Shell>} />
       <Route path="/attendance" element={<Shell><AttendancePage /></Shell>} />
       <Route path="/reports" element={<Shell><ReportsPage /></Shell>} />
-      <Route path="/settings" element={<Shell><Placeholder title="Configuración" /></Shell>} />
+      <Route path="/settings" element={<Shell><SettingsPage /></Shell>} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   );

@@ -1,0 +1,38 @@
+# Deploy en Render: un web service (API + cliente estático) + Postgres managed.
+# Las fotos viven en Cloudflare R2 (S3-compatible), NUNCA en el disco de Render.
+services:
+  - type: web
+    name: nodo-clock-in
+    runtime: node
+    plan: starter
+    buildCommand: npm install && npm run build --workspace=client && npm run build --workspace=server
+    startCommand: cd server && npm run migrate && npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: nodo-clock-in-db
+          property: connectionString
+      - key: JWT_SECRET
+        generateValue: true
+      - key: JWT_REFRESH_SECRET
+        generateValue: true
+      - key: KIOSK_DEVICE_TOKEN
+        generateValue: true
+      - key: PLANT_TIMEZONE
+        value: America/Mexico_City
+      # Cloudflare R2 — llenar en el dashboard de Render:
+      - key: S3_ENDPOINT
+        sync: false
+      - key: S3_BUCKET
+        sync: false
+      - key: S3_ACCESS_KEY_ID
+        sync: false
+      - key: S3_SECRET_ACCESS_KEY
+        sync: false
+      - key: S3_REGION
+        value: auto
+
+databases:
+  - name: nodo-clock-in-db
+    plan: basic-256mb
