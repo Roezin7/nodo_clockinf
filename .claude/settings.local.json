@@ -6,7 +6,11 @@
       "Bash(pg_isready)",
       "Bash(git init *)",
       "Bash(createdb clockai_dev)",
-      "Bash(npx vite *)"
+      "Bash(npx vite *)",
+      "Skill(run)",
+      "Skill(run:*)",
+      "Read(//Users/arturohernandez/.cache/**)",
+      "Bash(node -e \"require.resolve\\('playwright'\\)\")"
     ]
   }
 }

@@ -81,8 +81,11 @@ punchesRouter.post('/ingest', requireKiosk, async (req, res) => {
 
   // Deduplicación: una checada del mismo empleado dentro de la ventana
   // (default 2 min) es un doble tap — se regresa la existente sin insertar.
+  // Solo cuenta hacia atrás: una checada futura (corrección mal fechada) no
+  // debe tragarse las checadas reales del kiosco.
   const settings = await getSettings();
-  if (lastPunch && now.getTime() - lastPunch.punched_at.getTime() < settings.duplicate_window_minutes * 60_000) {
+  const sinceLastMs = lastPunch ? now.getTime() - lastPunch.punched_at.getTime() : -1;
+  if (lastPunch && sinceLastMs >= 0 && sinceLastMs < settings.duplicate_window_minutes * 60_000) {
     res.status(200).json({
       punch_id: lastPunch.id,
       employee_name: employee.full_name,
@@ -171,6 +174,10 @@ const manualSchema = z.object({
 punchesRouter.post('/manual', requireAuth, requireAdmin, async (req, res) => {
   const body = manualSchema.parse(req.body);
   const userId = req.user!.id;
+  // Una checada fechada en el futuro rompe la inferencia y la deduplicación del kiosco
+  if (new Date(body.punched_at) > new Date()) {
+    throw badRequest('La checada no puede tener fecha/hora en el futuro');
+  }
 
   const employee = await queryOne<{ id: string }>(`SELECT id FROM employees WHERE id = $1`, [body.employee_id]);
   if (!employee) throw notFound('Empleado no encontrado');
