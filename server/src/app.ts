@@ -17,6 +17,9 @@ import { storageIsLocal, LOCAL_DIR } from './storage.js';
 
 export function createApp(): express.Express {
   const app = express();
+  // Detrás del proxy de la plataforma (Traefik en Coolify, Render): un solo salto.
+  // Sin esto, express-rate-limit v7 rechaza peticiones que traen X-Forwarded-For.
+  app.set('trust proxy', 1);
   app.use(cors());
   app.use(express.json({ limit: '1mb' }));
 
