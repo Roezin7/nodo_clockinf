@@ -6,7 +6,6 @@ import {
   CalendarCheck,
   FileSpreadsheet,
   Settings as SettingsIcon,
-  SwatchBook,
   LogOut,
   PanelLeftClose,
   PanelLeftOpen,
@@ -31,7 +30,6 @@ const NAV = [
   { to: '/attendance', label: 'Asistencia', icon: CalendarCheck },
   { to: '/reports', label: 'Reporte semanal', icon: FileSpreadsheet },
   { to: '/settings', label: 'Configuración', icon: SettingsIcon },
-  { to: '/styleguide', label: 'Styleguide', icon: SwatchBook },
 ] as const;
 
 const SIDEBAR_KEY = 'clockai.sidebar.collapsed';
