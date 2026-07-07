@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Users } from 'lucide-react';
+import { Camera, Users } from 'lucide-react';
 import type { Employee, Shift } from '@clockai/shared';
 import { api, ApiError } from '../api';
 import { useAuth } from '../hooks/useAuth';
 import PunchHistoryModal from '../components/PunchHistoryModal';
+import CameraCapture from '../components/CameraCapture';
 import { PageHeader } from '../components/layout/PageHeader';
 import {
   Button,
@@ -55,6 +56,14 @@ export default function EmployeesPage() {
   const [pinNotice, setPinNotice] = useState<{ name: string; number: number; pin: string } | null>(null);
   const [history, setHistory] = useState<Employee | null>(null);
   const [photoFile, setPhotoFile] = useState<File | null>(null);
+  const [cameraOpen, setCameraOpen] = useState(false);
+
+  const photoPreview = useMemo(() => (photoFile ? URL.createObjectURL(photoFile) : null), [photoFile]);
+  useEffect(() => {
+    return () => {
+      if (photoPreview) URL.revokeObjectURL(photoPreview);
+    };
+  }, [photoPreview]);
 
   const load = useCallback(async () => {
     const params = new URLSearchParams();
@@ -99,6 +108,7 @@ export default function EmployeesPage() {
     setEditing(emp);
     setFormError(null);
     setPhotoFile(null);
+    setCameraOpen(false);
     setForm(
       emp === 'new'
         ? EMPTY_FORM
@@ -314,13 +324,34 @@ export default function EmployeesPage() {
               label="Foto de enrolamiento"
               hint={editing === 'new' ? 'Al guardar se genera un PIN que se muestra una sola vez' : undefined}
             >
-              <input
-                type="file"
-                accept="image/*"
-                capture="user"
-                onChange={(e) => setPhotoFile(e.target.files?.[0] ?? null)}
-                className="block w-full text-13 text-ink-secondary file:mr-3 file:h-8 file:cursor-pointer file:rounded-control file:border file:border-line file:bg-raised file:px-3 file:text-13 file:font-medium file:text-ink"
-              />
+              {cameraOpen ? (
+                <CameraCapture
+                  onCapture={(file) => {
+                    setPhotoFile(file);
+                    setCameraOpen(false);
+                  }}
+                  onCancel={() => setCameraOpen(false)}
+                />
+              ) : (
+                <div className="flex items-center gap-3">
+                  {photoPreview && (
+                    <img
+                      src={photoPreview}
+                      alt="Foto de enrolamiento"
+                      className="h-14 w-14 rounded-control border border-line object-cover"
+                    />
+                  )}
+                  <Button variant="secondary" size="sm" onClick={() => setCameraOpen(true)}>
+                    <Camera size={14} strokeWidth={1.5} /> Tomar foto
+                  </Button>
+                  <input
+                    type="file"
+                    accept="image/*"
+                    onChange={(e) => setPhotoFile(e.target.files?.[0] ?? null)}
+                    className="block w-full text-13 text-ink-secondary file:mr-3 file:h-8 file:cursor-pointer file:rounded-control file:border file:border-line file:bg-raised file:px-3 file:text-13 file:font-medium file:text-ink"
+                  />
+                </div>
+              )}
             </Field>
           </div>
         </Modal>

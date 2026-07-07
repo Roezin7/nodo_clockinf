@@ -21,6 +21,11 @@ export function Modal({
   children: ReactNode;
 }) {
   const panelRef = useRef<HTMLDivElement>(null);
+  // onClose suele ser una arrow function nueva en cada render del padre; va en un
+  // ref para que el efecto de foco corra SOLO al montar — si se re-ejecutara,
+  // robaría el foco del input activo en cada tecleo.
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
 
   useEffect(() => {
     const previous = document.activeElement as HTMLElement | null;
@@ -29,7 +34,7 @@ export function Modal({
     function onKey(e: KeyboardEvent): void {
       if (e.key === 'Escape') {
         e.stopPropagation();
-        onClose();
+        onCloseRef.current();
         return;
       }
       if (e.key !== 'Tab' || !panelRef.current) return;
@@ -54,7 +59,7 @@ export function Modal({
       document.removeEventListener('keydown', onKey);
       previous?.focus();
     };
-  }, [onClose]);
+  }, []);
 
   return (
     <div
