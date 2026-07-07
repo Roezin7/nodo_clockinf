@@ -33,15 +33,8 @@ Una sola app (Dockerfile en la raíz: API + cliente estático) + una Postgres lo
 
 ## 3. Primer deploy
 
-1. **Deploy.** El contenedor ejecuta `npm run migrate && npm start`; verificar en logs `NODO CLOCK-IN server escuchando en :3001`.
-2. **Seed inicial** (una sola vez; es idempotente): en Coolify → app → **Terminal**:
-
-   ```sh
-   node dist/seed.js
-   ```
-
-   Crea áreas, turnos placeholder, settings default y el usuario admin.
-3. Entrar con el admin, **cambiar la contraseña**, ajustar horarios de turnos y zona horaria en Configuración.
+1. **Deploy.** El contenedor ejecuta migraciones + seed + server en cada arranque (el seed es idempotente: crea áreas, turnos placeholder, settings y el admin solo si faltan). Verificar en logs `NODO CLOCK-IN server escuchando en :3001`.
+2. Entrar con el admin (`admin@nodo.local / admin1234` si no definiste `SEED_ADMIN_*`), **cambiar la contraseña**, ajustar horarios de turnos y zona horaria en Configuración.
 
 ## Notas
 
