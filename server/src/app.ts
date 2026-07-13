@@ -14,6 +14,7 @@ import { reportsRouter } from './routes/reports.js';
 import { settingsRouter } from './routes/settings.js';
 import { usersRouter } from './routes/users.js';
 import { devicesRouter, organizationRouter, plantsRouter } from './routes/organization.js';
+import { manualTimeRouter } from './routes/manualTime.js';
 import { storageIsLocal, LOCAL_DIR } from './storage.js';
 
 export function createApp(): express.Express {
@@ -51,6 +52,7 @@ export function createApp(): express.Express {
   app.use('/api/organization', organizationRouter);
   app.use('/api/plants', plantsRouter);
   app.use('/api/devices', devicesRouter);
+  app.use('/api/manual-time', manualTimeRouter);
 
   // Solo dev: sirve las fotos guardadas en disco local (sin R2 configurado)
   if (storageIsLocal) {

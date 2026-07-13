@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { computeDay, dropDuplicates, reconcileWeekOvertime, type EnginePunch } from './calcEngine.js';
+import { computeDay, dropDuplicates, type EnginePunch } from './calcEngine.js';
 import type { PunchType } from '../types.js';
 
 const TZ = 'America/Mexico_City';
@@ -33,6 +33,18 @@ describe('computeDay — día normal', () => {
     expect(day.anomalies).toHaveLength(0);
   });
 
+  it('conserva segundos reales y no trunca al minuto', () => {
+    const day = computeDay(
+      [
+        punch('shift_in', '07:00'),
+        { id: 'seconds', punch_type: 'shift_out', punched_at: new Date(`${DATE}T15:00:30-06:00`) },
+      ],
+      ctx
+    );
+    expect(day.worked_seconds).toBe(8 * 3600 + 30);
+    expect(day.worked_minutes).toBe(480.5);
+  });
+
   it('entrada dentro de tolerancia (07:04) no es retardo', () => {
     const day = computeDay([punch('shift_in', '07:04'), punch('shift_out', '17:00')], ctx);
     expect(day.late).toBe(false);
@@ -46,15 +58,13 @@ describe('computeDay — día normal', () => {
 });
 
 describe('computeDay — overtime diario', () => {
-  it('día de 11h trabajadas se reporta completo; el OT lo decide la reconciliación', () => {
+  it('día de 11h se reporta exacto; la clasificación corresponde al motor California', () => {
     const day = computeDay(
       [punch('shift_in', '06:00'), punch('meal_out', '13:00'), punch('meal_in', '13:30'), punch('shift_out', '17:30')],
       ctx
     );
     expect(day.worked_minutes).toBe(11 * 60); // 11.5h − 30min
-    const { regular_minutes, overtime_minutes } = reconcileWeekOvertime([day.worked_minutes], 8 * 60, 48 * 60);
-    expect(regular_minutes).toBe(8 * 60);
-    expect(overtime_minutes).toBe(3 * 60);
+    expect(day.worked_seconds).toBe(11 * 3600);
   });
 });
 
@@ -151,41 +161,5 @@ describe('computeDay — corrección', () => {
     );
     expect(day.complete).toBe(true);
     expect(day.worked_minutes).toBe(9 * 60);
-  });
-});
-
-describe('reconcileWeekOvertime', () => {
-  const D = 8 * 60;
-  const W = 48 * 60;
-
-  it('semana sin excedentes: todo regular', () => {
-    const r = reconcileWeekOvertime([480, 480, 480, 480, 480], D, W);
-    expect(r.regular_minutes).toBe(2400);
-    expect(r.overtime_minutes).toBe(0);
-  });
-
-  it('OT diario sin exceder semana', () => {
-    const r = reconcileWeekOvertime([600, 480, 480], D, W); // 10h un día
-    expect(r.regular_minutes).toBe(1440);
-    expect(r.overtime_minutes).toBe(120);
-  });
-
-  it('OT semanal sin OT diario (6 días de 8h = 48h + 1 día 8h)', () => {
-    const r = reconcileWeekOvertime([480, 480, 480, 480, 480, 480, 480], D, W);
-    expect(r.regular_minutes).toBe(W);
-    expect(r.overtime_minutes).toBe(480);
-  });
-
-  it('sin doble conteo: el excedente diario no vuelve a contar en el semanal', () => {
-    // 6 días de 10h: 12h OT diario; regular acumulado 48h = umbral, sin extra semanal
-    const r = reconcileWeekOvertime(Array(6).fill(600), D, W);
-    expect(r.overtime_minutes).toBe(6 * 120);
-    expect(r.regular_minutes).toBe(W);
-    expect(r.regular_minutes + r.overtime_minutes).toBe(6 * 600);
-  });
-
-  it('umbrales configurables', () => {
-    const r = reconcileWeekOvertime([540], 9 * 60, W);
-    expect(r.overtime_minutes).toBe(0);
   });
 });

@@ -16,7 +16,8 @@ const patchSchema = z
     duplicate_window_minutes: z.number().int().min(0).max(30),
     timezone: z.enum(ALLOWED_TIMEZONE_IDS),
   })
-  .partial();
+  .partial()
+  .strict();
 
 settingsRouter.patch('/', requireAdmin, async (req, res) => {
   const body = patchSchema.parse(req.body);

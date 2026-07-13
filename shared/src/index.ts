@@ -168,6 +168,8 @@ export interface DayCalc {
   shift_out: string | null;
   meal_minutes: number;
   worked_minutes: number;
+  meal_seconds: number;
+  worked_seconds: number;
   late: boolean;
   late_minutes: number;
   complete: boolean;
@@ -184,6 +186,24 @@ export interface DayDetailPunch {
   voided: boolean;
   correction_reason: string | null;
   area_name: string | null;
+  plant_id: string;
+  plant_name: string;
+}
+
+export interface ManualTimeEntry {
+  id: string;
+  employee_id: string;
+  plant_id: string;
+  plant_name: string;
+  work_date: string;
+  duration_seconds: number;
+  reason: string;
+  created_by: string;
+  created_by_name: string;
+  created_at: string;
+  voided_at: string | null;
+  voided_by: string | null;
+  void_reason: string | null;
 }
 
 export interface DayDetailRow {
@@ -194,6 +214,9 @@ export interface DayDetailRow {
   area_name: string | null;
   calc: DayCalc;
   punches: DayDetailPunch[];
+  manual_time: ManualTimeEntry[];
+  manual_seconds: number;
+  total_seconds: number;
 }
 
 export interface AttendanceDayResponse {
@@ -209,6 +232,15 @@ export interface WeekEmployeeCalc {
   days_worked: number;
   regular_minutes: number;
   overtime_minutes: number;
+  double_time_minutes: number;
+  clocked_minutes: number;
+  manual_minutes: number;
+  regular_seconds: number;
+  overtime_seconds: number;
+  double_time_seconds: number;
+  clocked_seconds: number;
+  manual_seconds: number;
+  total_seconds: number;
   lates: number;
   absences: number;
   total_minutes: number;
@@ -221,6 +253,7 @@ export interface WeekReport {
   employees: WeekEmployeeCalc[];
   anomaly_count: number;
   status: 'draft' | 'final';
+  policy: 'CA_STANDARD_8_40';
   finalized_at?: string;
   finalized_by?: string;
 }

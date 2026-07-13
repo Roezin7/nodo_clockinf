@@ -49,13 +49,37 @@ async function getFinalReport(organizationId: string, weekStart: string): Promis
 function hoursOnly(computation: WeekComputation): WeekComputation {
   return {
     ...computation,
-    employees: computation.employees.map((employee) => ({
-      ...employee,
-      social_security: null,
-      lates: 0,
-      absences: 0,
-      days: employee.days.map((day) => ({ ...day, late: false, late_minutes: 0 })),
-    })),
+    policy: 'CA_STANDARD_8_40',
+    employees: computation.employees.map((employee) => {
+      const regularSeconds = employee.regular_seconds ?? employee.regular_minutes * 60;
+      const overtimeSeconds = employee.overtime_seconds ?? employee.overtime_minutes * 60;
+      const doubleTimeSeconds = employee.double_time_seconds ?? 0;
+      const totalSeconds = employee.total_seconds ?? employee.total_minutes * 60;
+      const manualSeconds = employee.manual_seconds ?? 0;
+      const clockedSeconds = employee.clocked_seconds ?? totalSeconds - manualSeconds;
+      return {
+        ...employee,
+        regular_seconds: regularSeconds,
+        overtime_seconds: overtimeSeconds,
+        double_time_seconds: doubleTimeSeconds,
+        total_seconds: totalSeconds,
+        manual_seconds: manualSeconds,
+        clocked_seconds: clockedSeconds,
+        double_time_minutes: doubleTimeSeconds / 60,
+        manual_minutes: manualSeconds / 60,
+        clocked_minutes: clockedSeconds / 60,
+        social_security: null,
+        lates: 0,
+        absences: 0,
+        days: employee.days.map((day) => ({
+          ...day,
+          meal_seconds: day.meal_seconds ?? day.meal_minutes * 60,
+          worked_seconds: day.worked_seconds ?? day.worked_minutes * 60,
+          late: false,
+          late_minutes: 0,
+        })),
+      };
+    }),
   };
 }
 
@@ -121,7 +145,9 @@ reportsRouter.get('/weeks', async (req, res) => {
 
 // ---------- Export ----------
 
-const hours = (min: number): number => Math.round((min / 60) * 100) / 100;
+const hours = (min: number): number => Math.round((min / 60) * 10_000) / 10_000;
+const secondsHours = (seconds: number | undefined, fallbackMinutes = 0): number =>
+  Math.round(((seconds ?? fallbackMinutes * 60) / 3600) * 10_000) / 10_000;
 
 function localTime(iso: string | null, timezone: string): string {
   if (!iso) return '';
@@ -129,7 +155,8 @@ function localTime(iso: string | null, timezone: string): string {
 }
 
 const SUMMARY_HEADERS = [
-  '# Empleado', 'Nombre', 'Días trabajados', 'Hrs regulares', 'Hrs OT 1.5x', 'Total hrs',
+  '# Empleado', 'Nombre', 'Días trabajados', 'Hrs regulares', 'Hrs OT 1.5x',
+  'Hrs double 2x', 'Horas manuales', 'Total hrs',
 ];
 
 function summaryRow(e: WeekEmployeeCalc): (string | number)[] {
@@ -137,9 +164,11 @@ function summaryRow(e: WeekEmployeeCalc): (string | number)[] {
     e.employee_number,
     e.full_name,
     e.days_worked,
-    hours(e.regular_minutes),
-    hours(e.overtime_minutes),
-    hours(e.total_minutes),
+    secondsHours(e.regular_seconds, e.regular_minutes),
+    secondsHours(e.overtime_seconds, e.overtime_minutes),
+    secondsHours(e.double_time_seconds, e.double_time_minutes),
+    secondsHours(e.manual_seconds, e.manual_minutes),
+    secondsHours(e.total_seconds, e.total_minutes),
   ];
 }
 

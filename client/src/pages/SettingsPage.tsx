@@ -57,7 +57,14 @@ function ThresholdsCard() {
     setSaving(true);
     setError(null);
     try {
-      const updated = await api<Settings>('/api/settings', { method: 'PATCH', body: JSON.stringify(settings) });
+      const updated = await api<Settings>('/api/settings', {
+        method: 'PATCH',
+        body: JSON.stringify({
+          timezone: settings.timezone,
+          photo_retention_weeks: settings.photo_retention_weeks,
+          duplicate_window_minutes: settings.duplicate_window_minutes,
+        }),
+      });
       setSettings(updated);
       setAppTimezone(updated.timezone); // toda la UI cambia de zona al instante
       toast('Configuración guardada');

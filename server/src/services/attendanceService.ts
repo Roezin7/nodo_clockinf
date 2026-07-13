@@ -4,9 +4,18 @@
  */
 import { DateTime } from 'luxon';
 import { query } from '../db.js';
-import { computeDay, reconcileWeekOvertime, type EnginePunch } from './calcEngine.js';
+import { computeDay, type EnginePunch } from './calcEngine.js';
+import { classifyCaliforniaOvertime, type CaliforniaWorkChunk } from './californiaOvertime.js';
+import { buildWorkSegments, type WorkSegmentIssue } from './workSegments.js';
 import { getSettings } from './settingsService.js';
-import type { DayCalc, DayDetailPunch, DayDetailRow, PunchType, WeekEmployeeCalc } from '../types.js';
+import type {
+  DayCalc,
+  DayDetailPunch,
+  DayDetailRow,
+  ManualTimeEntry,
+  PunchType,
+  WeekEmployeeCalc,
+} from '../types.js';
 
 interface PunchDbRow {
   id: string;
@@ -14,6 +23,23 @@ interface PunchDbRow {
   punch_type: PunchType;
   punched_at: Date;
   work_date: string;
+}
+
+interface SegmentPunchDbRow {
+  id: string;
+  employee_id: string;
+  punch_type: PunchType;
+  punched_at: Date;
+  plant_id: string;
+}
+
+interface ManualTimeDbRow {
+  id: string;
+  employee_id: string;
+  plant_id: string;
+  work_date: string;
+  duration_seconds: string | number;
+  created_at: Date;
 }
 
 interface EmployeeInfo {
@@ -60,6 +86,38 @@ async function fetchPunches(
      ORDER BY p.punched_at`,
     [fromDate, toDate, timezone, organizationId, plantIds ?? null]
   );
+}
+
+async function fetchSegmentPunches(
+  organizationId: string,
+  weekStart: string,
+  weekEnd: string,
+  timezone: string
+): Promise<SegmentPunchDbRow[]> {
+  return query<SegmentPunchDbRow>(
+    `SELECT id, employee_id, punch_type, punched_at, plant_id
+     FROM punches
+     WHERE organization_id = $1 AND NOT voided
+       AND (punched_at AT TIME ZONE $4)::date
+           BETWEEN ($2::date - 1) AND ($3::date + 1)
+     ORDER BY employee_id, punched_at, created_at, id`,
+    [organizationId, weekStart, weekEnd, timezone]
+  );
+}
+
+function issueTouchesWeek(
+  issue: WorkSegmentIssue,
+  weekStart: string,
+  weekEnd: string,
+  timezone: string
+): boolean {
+  const localDate = (iso: string | null): string | null =>
+    iso ? DateTime.fromISO(iso, { setZone: true }).setZone(timezone).toISODate() : null;
+  const start = localDate(issue.start);
+  const end = localDate(issue.end);
+  if (start && start > weekEnd) return false;
+  if (end && end < weekStart) return false;
+  return !start || start >= weekStart || !end || end >= weekStart;
 }
 
 /** Cálculo de un día local de planta para todos los empleados con checadas. */
@@ -110,13 +168,21 @@ export async function dayDetail(
   plantIds?: string[]
 ): Promise<DayDetailRow[]> {
   const settings = await getSettings(organizationId);
-  const [allPunches, employees, assignments] = await Promise.all([
-    query<PunchDbRow & { source: string; voided: boolean; correction_reason: string | null; punch_area: string | null }>(
+  const [allPunches, employees, assignments, manualEntries] = await Promise.all([
+    query<PunchDbRow & {
+      source: string;
+      voided: boolean;
+      correction_reason: string | null;
+      punch_area: string | null;
+      plant_id: string;
+      plant_name: string;
+    }>(
       `SELECT p.id, p.employee_id, p.punch_type, p.punched_at, p.source, p.voided,
-              p.correction_reason, a.name AS punch_area,
+              p.correction_reason, a.name AS punch_area, p.plant_id, pl.name AS plant_name,
               (p.punched_at AT TIME ZONE $2)::date::text AS work_date
        FROM punches p
        LEFT JOIN areas a ON a.id = p.area_id
+       JOIN plants pl ON pl.id = p.plant_id
        WHERE p.organization_id = $3
          AND ($4::uuid[] IS NULL OR p.plant_id = ANY($4::uuid[]))
          AND (p.punched_at AT TIME ZONE $2)::date = $1::date
@@ -132,6 +198,19 @@ export async function dayDetail(
          AND ($3::uuid[] IS NULL OR d.plant_id = ANY($3::uuid[]))`,
       [workDate, organizationId, plantIds ?? null]
     ),
+    query<ManualTimeEntry>(
+      `SELECT m.id, m.employee_id, m.plant_id, p.name AS plant_name, m.work_date,
+              m.duration_seconds::double precision, m.reason, m.created_by,
+              u.name AS created_by_name, m.created_at, m.voided_at,
+              m.voided_by, m.void_reason
+       FROM manual_time_entries m
+       JOIN plants p ON p.id = m.plant_id
+       JOIN users u ON u.id = m.created_by
+       WHERE m.organization_id = $1 AND m.work_date = $2::date
+         AND ($3::uuid[] IS NULL OR m.plant_id = ANY($3::uuid[]))
+       ORDER BY m.created_at`,
+      [organizationId, workDate, plantIds ?? null]
+    ),
   ]);
 
   const areaByEmployee = new Map(assignments.map((r) => [r.employee_id, r.area_name]));
@@ -143,8 +222,17 @@ export async function dayDetail(
     byEmployee.set(p.employee_id, list);
   }
 
+  const manualByEmployee = new Map<string, ManualTimeEntry[]>();
+  for (const entry of manualEntries) {
+    const list = manualByEmployee.get(entry.employee_id) ?? [];
+    list.push(entry);
+    manualByEmployee.set(entry.employee_id, list);
+  }
+
   const rows: DayDetailRow[] = [];
-  for (const [employeeId, empPunches] of byEmployee) {
+  const employeeIds = new Set([...byEmployee.keys(), ...manualByEmployee.keys()]);
+  for (const employeeId of employeeIds) {
+    const empPunches = byEmployee.get(employeeId) ?? [];
     const emp = employees.get(employeeId);
     if (!emp) continue;
     const valid = empPunches.filter((p) => !p.voided);
@@ -161,6 +249,11 @@ export async function dayDetail(
     );
     // Área del día: asignación explícita, o la de la última checada que la traiga
     const lastPunchArea = [...valid].reverse().find((p) => p.punch_area)?.punch_area ?? null;
+    const employeeManual = manualByEmployee.get(employeeId) ?? [];
+    const manualSeconds = employeeManual
+      .filter((entry) => !entry.voided_at)
+      .reduce((sum, entry) => sum + Number(entry.duration_seconds), 0);
+    if (!valid.length && manualSeconds > 0) calc.complete = true;
     rows.push({
       employee_id: employeeId,
       employee_number: emp.employee_number,
@@ -168,6 +261,9 @@ export async function dayDetail(
       shift_name: emp.shift_name,
       area_name: areaByEmployee.get(employeeId) ?? lastPunchArea,
       calc,
+      manual_time: employeeManual,
+      manual_seconds: manualSeconds,
+      total_seconds: calc.worked_seconds + manualSeconds,
       punches: empPunches.map((p) => ({
         id: p.id,
         punch_type: p.punch_type,
@@ -176,6 +272,8 @@ export async function dayDetail(
         voided: p.voided,
         correction_reason: p.correction_reason,
         area_name: p.punch_area,
+        plant_id: p.plant_id,
+        plant_name: p.plant_name,
       })),
     });
   }
@@ -187,11 +285,12 @@ export async function dayDetail(
 export interface WeekComputation {
   week_start: string;
   week_end: string;
+  policy: 'CA_STANDARD_8_40';
   employees: WeekEmployeeCalc[];
   anomaly_count: number;
 }
 
-/** Cálculo semanal completo con reconciliación de OT y faltas. */
+/** Cálculo semanal exacto bajo la política inmutable CA_STANDARD_8_40. */
 export async function computeWeek(
   organizationId: string,
   weekStart: string,
@@ -200,13 +299,21 @@ export async function computeWeek(
   const settings = await getSettings(organizationId);
   const start = DateTime.fromISO(weekStart, { zone: settings.timezone });
   const weekEnd = start.plus({ days: 6 }).toISODate()!;
-  const [punches, employees] = await Promise.all([
+  const [punches, segmentPunches, manualEntries, employees] = await Promise.all([
     fetchPunches(organizationId, weekStart, weekEnd, settings.timezone, plantIds),
+    fetchSegmentPunches(organizationId, weekStart, weekEnd, settings.timezone),
+    query<ManualTimeDbRow>(
+      `SELECT id, employee_id, plant_id, work_date, duration_seconds, created_at
+       FROM manual_time_entries
+       WHERE organization_id = $1 AND voided_at IS NULL
+         AND work_date BETWEEN $2::date AND $3::date
+       ORDER BY employee_id, work_date, created_at, id`,
+      [organizationId, weekStart, weekEnd]
+    ),
     fetchEmployees(organizationId),
   ]);
 
   const dates: string[] = Array.from({ length: 7 }, (_, i) => start.plus({ days: i }).toISODate()!);
-  const today = DateTime.now().setZone(settings.timezone).toISODate()!;
 
   // Agrupar checadas por empleado × día
   const byEmpDay = new Map<string, Map<string, EnginePunch[]>>();
@@ -218,8 +325,25 @@ export async function computeWeek(
     byEmpDay.set(p.employee_id, days);
   }
 
-  // Empleados a reportar: con checadas en la semana, o activos durante la semana
-  const relevant = new Set<string>(byEmpDay.keys());
+  const segmentPunchesByEmployee = new Map<string, SegmentPunchDbRow[]>();
+  for (const punch of segmentPunches) {
+    const list = segmentPunchesByEmployee.get(punch.employee_id) ?? [];
+    list.push(punch);
+    segmentPunchesByEmployee.set(punch.employee_id, list);
+  }
+  const manualByEmployee = new Map<string, ManualTimeDbRow[]>();
+  for (const entry of manualEntries) {
+    const list = manualByEmployee.get(entry.employee_id) ?? [];
+    list.push(entry);
+    manualByEmployee.set(entry.employee_id, list);
+  }
+
+  // Empleados a reportar: con tiempo, o activos durante la semana.
+  const relevant = new Set<string>([
+    ...byEmpDay.keys(),
+    ...segmentPunchesByEmployee.keys(),
+    ...manualByEmployee.keys(),
+  ]);
   for (const emp of employees.values()) {
     const hiredOk = !emp.hired_at || emp.hired_at <= weekEnd;
     const notDeactivated = !emp.deactivated_at || emp.deactivated_at >= weekStart;
@@ -232,12 +356,13 @@ export async function computeWeek(
   for (const employeeId of relevant) {
     const emp = employees.get(employeeId);
     if (!emp) continue;
-    const days: DayCalc[] = [];
+    const legacyDays = new Map<string, DayCalc>();
 
     for (const date of dates) {
       const dayPunches = byEmpDay.get(employeeId)?.get(date);
       if (!dayPunches) continue;
-      days.push(
+      legacyDays.set(
+        date,
         computeDay(dayPunches, {
           employeeId,
           workDate: date,
@@ -249,42 +374,99 @@ export async function computeWeek(
       );
     }
 
-    const { regular_minutes, overtime_minutes } = reconcileWeekOvertime(
-      days.map((d) => d.worked_minutes),
-      settings.daily_ot_threshold_minutes,
-      settings.weekly_ot_threshold_minutes
+    const segments = buildWorkSegments(
+      (segmentPunchesByEmployee.get(employeeId) ?? []).map((punch) => ({
+        id: punch.id,
+        type: punch.punch_type,
+        time: punch.punched_at,
+        plantId: punch.plant_id,
+      }))
     );
+    const clockChunks: CaliforniaWorkChunk[] = segments.chunks.filter(
+      (chunk) => chunk.workDate >= weekStart && chunk.workDate <= weekEnd
+    );
+    const manualChunks: CaliforniaWorkChunk[] = (manualByEmployee.get(employeeId) ?? []).map(
+      (entry, order) => ({
+        id: `manual:${entry.id}`,
+        workDate: entry.work_date,
+        durationSeconds: Number(entry.duration_seconds),
+        plantId: entry.plant_id,
+        source: 'manual',
+        order,
+      })
+    );
+    const classification = classifyCaliforniaOvertime({
+      weekStart,
+      chunks: [...clockChunks, ...manualChunks],
+    });
 
-    // Faltas: día laborable (settings.work_days, ISO 1=lunes) ya transcurrido,
-    // dentro del periodo activo del empleado, sin ninguna checada.
-    const punchedDates = new Set(days.map((d) => d.work_date));
-    let absences = 0;
-    for (const date of dates) {
-      if (date > today) continue;
-      const weekday = DateTime.fromISO(date).weekday;
-      if (!settings.work_days.includes(weekday)) continue;
-      if (emp.hired_at && date < emp.hired_at) continue;
-      if (emp.deactivated_at && date > emp.deactivated_at) continue;
-      if (!punchedDates.has(date)) absences += 1;
-    }
+    const relevantIssues = segments.issues.filter((issue) =>
+      issueTouchesWeek(issue, weekStart, weekEnd, settings.timezone)
+    );
+    anomalyCount += relevantIssues.length;
 
-    anomalyCount += days.reduce((n, d) => n + d.anomalies.length, 0);
+    const days: DayCalc[] = classification.days
+      .filter((day) => day.totalWorkedSeconds > 0 || legacyDays.has(day.workDate))
+      .map((day) => {
+        const legacy = legacyDays.get(day.workDate) ??
+          computeDay([], {
+            employeeId,
+            workDate: day.workDate,
+            timezone: settings.timezone,
+            shiftStart: null,
+            duplicateWindowMinutes: settings.duplicate_window_minutes,
+          });
+        const hasClockPunches = byEmpDay.get(employeeId)?.has(day.workDate) ?? false;
+        return {
+          ...legacy,
+          worked_seconds: day.totalWorkedSeconds,
+          worked_minutes: day.totalWorkedSeconds / 60,
+          complete: hasClockPunches ? legacy.complete : day.totalWorkedSeconds > 0,
+        };
+      });
+
+    const regularSeconds = classification.totals.regularSeconds;
+    const overtimeSeconds = classification.totals.overtime15Seconds;
+    const doubleTimeSeconds = classification.totals.doubleTimeSeconds;
+    const clockedSeconds = Object.values(classification.bySource.clock).reduce(
+      (sum, seconds) => sum + seconds,
+      0
+    );
+    const manualSeconds = Object.values(classification.bySource.manual).reduce(
+      (sum, seconds) => sum + seconds,
+      0
+    );
 
     result.push({
       employee_id: employeeId,
       employee_number: emp.employee_number,
       full_name: emp.full_name,
       social_security: null,
-      days_worked: days.filter((d) => d.worked_minutes > 0).length,
-      regular_minutes,
-      overtime_minutes,
-      lates: days.filter((d) => d.late).length,
-      absences,
-      total_minutes: regular_minutes + overtime_minutes,
+      days_worked: classification.days.filter((day) => day.totalWorkedSeconds > 0).length,
+      regular_minutes: regularSeconds / 60,
+      overtime_minutes: overtimeSeconds / 60,
+      double_time_minutes: doubleTimeSeconds / 60,
+      clocked_minutes: clockedSeconds / 60,
+      manual_minutes: manualSeconds / 60,
+      regular_seconds: regularSeconds,
+      overtime_seconds: overtimeSeconds,
+      double_time_seconds: doubleTimeSeconds,
+      clocked_seconds: clockedSeconds,
+      manual_seconds: manualSeconds,
+      total_seconds: classification.totalWorkedSeconds,
+      lates: 0,
+      absences: 0,
+      total_minutes: classification.totalWorkedSeconds / 60,
       days,
     });
   }
 
   result.sort((a, b) => a.employee_number - b.employee_number);
-  return { week_start: weekStart, week_end: weekEnd, employees: result, anomaly_count: anomalyCount };
+  return {
+    week_start: weekStart,
+    week_end: weekEnd,
+    policy: 'CA_STANDARD_8_40',
+    employees: result,
+    anomaly_count: anomalyCount,
+  };
 }

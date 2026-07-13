@@ -28,6 +28,7 @@ function addDays(date: string, days: number): string {
 }
 
 const fmtHours = (min: number): string => (min / 60).toFixed(2);
+const fmtSeconds = (seconds: number): string => (seconds / 3600).toFixed(2);
 
 export default function ReportsPage() {
   useAppTimezone(); // re-render si cambia la zona de la planta
@@ -96,13 +97,13 @@ export default function ReportsPage() {
   const totals = report?.employees.reduce(
     (acc, e) => ({
       days: acc.days + e.days_worked,
-      regular: acc.regular + e.regular_minutes,
-      ot: acc.ot + e.overtime_minutes,
-      lates: acc.lates + e.lates,
-      absences: acc.absences + e.absences,
-      total: acc.total + e.total_minutes,
+      regular: acc.regular + (e.regular_seconds ?? e.regular_minutes * 60),
+      ot: acc.ot + (e.overtime_seconds ?? e.overtime_minutes * 60),
+      double: acc.double + (e.double_time_seconds ?? 0),
+      manual: acc.manual + (e.manual_seconds ?? 0),
+      total: acc.total + (e.total_seconds ?? e.total_minutes * 60),
     }),
-    { days: 0, regular: 0, ot: 0, lates: 0, absences: 0, total: 0 }
+    { days: 0, regular: 0, ot: 0, double: 0, manual: 0, total: 0 }
   );
 
   return (
@@ -174,7 +175,7 @@ export default function ReportsPage() {
       )}
 
       {!report ? (
-        <TableSkeleton rows={8} cols={8} />
+        <TableSkeleton rows={8} cols={9} />
       ) : !report.employees.length ? (
         <div className="rounded-card border border-line bg-raised shadow-card">
           <EmptyState icon={FileSpreadsheet} title="Sin datos esta semana." />
@@ -187,9 +188,9 @@ export default function ReportsPage() {
               <TH>Nombre</TH>
               <TH num>Días</TH>
               <TH num>Hrs reg.</TH>
-              <TH num>Hrs OT</TH>
-              <TH num>Retardos</TH>
-              <TH num>Faltas</TH>
+              <TH num>OT 1.5×</TH>
+              <TH num>Double 2×</TH>
+              <TH num>Manuales</TH>
               <TH num>Total hrs</TH>
               <TH>{''}</TH>
             </tr>
@@ -201,13 +202,17 @@ export default function ReportsPage() {
                   <TD num className="font-semibold">{e.employee_number}</TD>
                   <TD className="font-medium">{e.full_name}</TD>
                   <TD num>{e.days_worked}</TD>
-                  <TD num>{fmtHours(e.regular_minutes)}</TD>
-                  <TD num className={e.overtime_minutes ? 'font-semibold' : 'text-ink-tertiary'}>
-                    {fmtHours(e.overtime_minutes)}
+                  <TD num>{fmtSeconds(e.regular_seconds ?? e.regular_minutes * 60)}</TD>
+                  <TD num className={e.overtime_seconds ? 'font-semibold' : 'text-ink-tertiary'}>
+                    {fmtSeconds(e.overtime_seconds ?? e.overtime_minutes * 60)}
                   </TD>
-                  <TD num className={e.lates ? 'font-semibold text-warning' : 'text-ink-tertiary'}>{e.lates}</TD>
-                  <TD num className={e.absences ? 'font-semibold text-danger' : 'text-ink-tertiary'}>{e.absences}</TD>
-                  <TD num className="font-semibold">{fmtHours(e.total_minutes)}</TD>
+                  <TD num className={e.double_time_seconds ? 'font-semibold' : 'text-ink-tertiary'}>
+                    {fmtSeconds(e.double_time_seconds ?? 0)}
+                  </TD>
+                  <TD num className={e.manual_seconds ? 'font-semibold text-accent' : 'text-ink-tertiary'}>
+                    {fmtSeconds(e.manual_seconds ?? 0)}
+                  </TD>
+                  <TD num className="font-semibold">{fmtSeconds(e.total_seconds ?? e.total_minutes * 60)}</TD>
                   <TD className="text-right">
                     <button
                       onClick={() => setExpanded(expanded === e.employee_id ? null : e.employee_id)}
@@ -261,11 +266,11 @@ export default function ReportsPage() {
                 <TD num>{''}</TD>
                 <TD>Totales ({report.employees.length} empleados)</TD>
                 <TD num>{totals.days}</TD>
-                <TD num>{fmtHours(totals.regular)}</TD>
-                <TD num>{fmtHours(totals.ot)}</TD>
-                <TD num>{totals.lates}</TD>
-                <TD num>{totals.absences}</TD>
-                <TD num>{fmtHours(totals.total)}</TD>
+                <TD num>{fmtSeconds(totals.regular)}</TD>
+                <TD num>{fmtSeconds(totals.ot)}</TD>
+                <TD num>{fmtSeconds(totals.double)}</TD>
+                <TD num>{fmtSeconds(totals.manual)}</TD>
+                <TD num>{fmtSeconds(totals.total)}</TD>
                 <TD>{''}</TD>
               </TFootRow>
             </tfoot>

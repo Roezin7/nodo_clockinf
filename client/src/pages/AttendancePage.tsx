@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { CalendarCheck } from 'lucide-react';
-import type { AttendanceDayResponse, DayDetailPunch, DayDetailRow, PunchType } from '@clockai/shared';
+import type { AttendanceDayResponse, DayDetailPunch, DayDetailRow, Plant, PunchType } from '@clockai/shared';
 import { api, ApiError } from '../api';
 import { useAuth } from '../hooks/useAuth';
 import { PUNCH_TYPE_LABELS } from '../components/PunchHistoryModal';
@@ -24,20 +24,40 @@ import {
   useToast,
 } from '../components/ui';
 
-function fmtMinutes(min: number): string {
-  return `${Math.floor(min / 60)}:${String(min % 60).padStart(2, '0')}`;
-}
+const fmtDuration = (seconds: number): string => `${(seconds / 3600).toFixed(2)} h`;
 
 interface CorrectionState {
   row: DayDetailRow;
 }
 
+type PlantPunch = DayDetailPunch & {
+  plant_id: string | null;
+  plant_name: string | null;
+};
+
+function punchesWithPlant(row: DayDetailRow): PlantPunch[] {
+  return row.punches as PlantPunch[];
+}
+
+function plantsWorked(row: DayDetailRow): string {
+  const names = new Set(
+    punchesWithPlant(row)
+      .filter((p) => !p.voided && p.plant_name)
+      .map((p) => p.plant_name as string)
+  );
+  for (const entry of row.manual_time) {
+    if (!entry.voided_at && entry.plant_name) names.add(entry.plant_name);
+  }
+  return [...names].join(', ') || '—';
+}
+
 export default function AttendancePage() {
   useAppTimezone(); // re-render si cambia la zona de la planta
   const user = useAuth();
-  const isAdmin = user?.role === 'admin';
+  const canCorrect = user?.role === 'admin' || user?.role === 'foreman';
   const [date, setDate] = useState(todayLocal());
   const [data, setData] = useState<AttendanceDayResponse | null>(null);
+  const [plants, setPlants] = useState<Plant[]>([]);
   const [correction, setCorrection] = useState<CorrectionState | null>(null);
 
   const load = useCallback(async () => {
@@ -48,6 +68,10 @@ export default function AttendancePage() {
     setData(null);
     void load();
   }, [load]);
+
+  useEffect(() => {
+    void api<Plant[]>('/api/plants').then(setPlants);
+  }, []);
 
   return (
     <div>
@@ -75,27 +99,26 @@ export default function AttendancePage() {
           <THead>
             <tr>
               <TH>Empleado</TH>
-              <TH>Turno / Área</TH>
+              <TH>Planta(s)</TH>
               <TH>Checadas</TH>
               <TH num>Comida</TH>
               <TH num>Horas</TH>
               <TH>Estado</TH>
-              {isAdmin && <TH className="text-right">Corrección</TH>}
+              {canCorrect && <TH className="text-right">Corrección</TH>}
             </tr>
           </THead>
           <tbody>
             {data.rows.map((row) => (
               <TRow
                 key={row.employee_id}
-                flag={!row.calc.complete ? 'danger' : row.calc.late ? 'warning' : null}
+                flag={!row.calc.complete || row.calc.anomalies.length ? 'danger' : null}
               >
                 <TD>
                   <span className="tnum font-semibold">#{row.employee_number}</span>{' '}
                   <span className="font-medium">{row.full_name}</span>
                 </TD>
                 <TD className="text-ink-secondary">
-                  {row.shift_name ?? '—'}
-                  {row.area_name ? ` · ${row.area_name}` : ''}
+                  {plantsWorked(row)}
                 </TD>
                 <TD className="whitespace-normal">
                   <div className="flex max-w-md flex-wrap gap-1.5 py-0.5">
@@ -114,22 +137,35 @@ export default function AttendancePage() {
                         {PUNCH_TYPE_LABELS[p.punch_type]} {fmtTime(p.punched_at)}
                       </span>
                     ))}
+                    {row.manual_time.map((entry) => (
+                      <span
+                        key={entry.id}
+                        title={entry.reason}
+                        className={`tnum inline-flex items-center rounded-control border px-1.5 py-0.5 text-12 font-medium ${
+                          entry.voided_at
+                            ? 'border-line text-ink-tertiary line-through'
+                            : 'border-accent-subtle bg-accent-subtle text-accent'
+                        }`}
+                      >
+                        +{fmtDuration(entry.duration_seconds)} manual
+                      </span>
+                    ))}
                   </div>
                 </TD>
-                <TD num className="text-ink-secondary">{row.calc.meal_minutes} min</TD>
-                <TD num className="font-semibold">{fmtMinutes(row.calc.worked_minutes)}</TD>
+                <TD num className="text-ink-secondary">{(row.calc.meal_seconds / 60).toFixed(0)} min</TD>
+                <TD num className="font-semibold">{fmtDuration(row.total_seconds)}</TD>
                 <TD>
                   <span className="inline-flex flex-wrap gap-1.5">
-                    {row.calc.late && <StatusBadge status="retardo" />}
                     {!row.calc.complete && <StatusBadge status="incompleto" />}
-                    {row.calc.complete && !row.calc.late && row.calc.state === 'out' && (
+                    {row.calc.anomalies.length > 0 && <StatusBadge status="anomalia" />}
+                    {row.calc.complete && row.calc.state === 'out' && (
                       <StatusBadge status="salio" />
                     )}
                     {row.calc.state === 'in' && <StatusBadge status="adentro" />}
                     {row.calc.state === 'meal' && <StatusBadge status="comida" />}
                   </span>
                 </TD>
-                {isAdmin && (
+                {canCorrect && (
                   <TD className="text-right">
                     <Button variant="secondary" size="sm" onClick={() => setCorrection({ row })}>
                       Corregir
@@ -146,6 +182,7 @@ export default function AttendancePage() {
         <CorrectionModal
           state={correction}
           date={date}
+          plants={plants}
           onDone={() => {
             setCorrection(null);
             void load();
@@ -160,24 +197,48 @@ export default function AttendancePage() {
 function CorrectionModal({
   state,
   date,
+  plants,
   onDone,
   onClose,
 }: {
   state: CorrectionState;
   date: string;
+  plants: Plant[];
   onDone: () => void;
   onClose: () => void;
 }) {
   const toast = useToast();
   const { row } = state;
-  const [mode, setMode] = useState<'add' | 'void'>('add');
+  const activePunches = punchesWithPlant(row).filter((p) => !p.voided);
+  const activeManualTime = row.manual_time.filter((entry) => !entry.voided_at);
+  const [mode, setMode] = useState<'add' | 'void' | 'hours' | 'void_hours'>('add');
   const [punchType, setPunchType] = useState<PunchType>('shift_out');
   const [time, setTime] = useState('17:00');
   const [targetId, setTargetId] = useState<string>('');
+  const [plantId, setPlantId] = useState(
+    activePunches.find((p) => p.plant_id)?.plant_id ?? plants.find((p) => p.active)?.id ?? ''
+  );
+  const [hours, setHours] = useState('');
+  const [manualTargetId, setManualTargetId] = useState('');
   const [reason, setReason] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const activePunches = row.punches.filter((p: DayDetailPunch) => !p.voided);
+  const selectedTarget = activePunches.find((p) => p.id === targetId);
+  const effectivePlantId = selectedTarget?.plant_id ?? plantId;
+  const numericHours = Number(hours);
+
+  useEffect(() => {
+    if (!plantId) {
+      const firstPlantId = activePunches.find((p) => p.plant_id)?.plant_id ?? plants.find((p) => p.active)?.id;
+      if (firstPlantId) setPlantId(firstPlantId);
+    }
+  }, [activePunches, plantId, plants]);
+
+  function selectTarget(id: string): void {
+    setTargetId(id);
+    const target = activePunches.find((p) => p.id === id);
+    if (target?.plant_id) setPlantId(target.plant_id);
+  }
 
   async function submit(): Promise<void> {
     setBusy(true);
@@ -188,6 +249,7 @@ function CorrectionModal({
           method: 'POST',
           body: JSON.stringify({
             employee_id: row.employee_id,
+            plant_id: effectivePlantId,
             punch_type: punchType,
             // Hora LOCAL de planta: el servidor la convierte con su propia zona
             punched_at_local: `${date}T${time}`,
@@ -196,9 +258,27 @@ function CorrectionModal({
           }),
         });
         toast('Checada manual agregada');
-      } else {
+      } else if (mode === 'void') {
         await api(`/api/punches/${targetId}/void`, { method: 'POST', body: JSON.stringify({ reason }) });
         toast('Checada anulada');
+      } else if (mode === 'hours') {
+        await api('/api/manual-time', {
+          method: 'POST',
+          body: JSON.stringify({
+            employee_id: row.employee_id,
+            plant_id: effectivePlantId,
+            work_date: date,
+            hours: numericHours,
+            reason,
+          }),
+        });
+        toast('Horas manuales agregadas');
+      } else {
+        await api(`/api/manual-time/${manualTargetId}/void`, {
+          method: 'POST',
+          body: JSON.stringify({ reason }),
+        });
+        toast('Horas manuales anuladas');
       }
       onDone();
     } catch (err) {
@@ -219,9 +299,15 @@ function CorrectionModal({
           <Button
             onClick={() => void submit()}
             loading={busy}
-            disabled={reason.trim().length < 3 || (mode === 'void' && !targetId)}
+            disabled={
+              reason.trim().length < 3 ||
+              (mode === 'add' && (!effectivePlantId || !time)) ||
+              (mode === 'void' && !targetId) ||
+              (mode === 'hours' && (!effectivePlantId || !Number.isFinite(numericHours) || numericHours <= 0)) ||
+              (mode === 'void_hours' && !manualTargetId)
+            }
           >
-            Guardar corrección
+            {mode === 'hours' ? 'Agregar horas' : mode === 'void_hours' ? 'Anular horas' : 'Guardar corrección'}
           </Button>
         </>
       }
@@ -242,13 +328,39 @@ function CorrectionModal({
             size="sm"
             onClick={() => {
               setMode('void');
-              setTargetId(activePunches[0]?.id ?? '');
+              selectTarget(activePunches[0]?.id ?? '');
             }}
             role="tab"
             aria-selected={mode === 'void'}
           >
             Anular checada
           </Button>
+          <Button
+            variant={mode === 'hours' ? 'primary' : 'secondary'}
+            size="sm"
+            onClick={() => {
+              setMode('hours');
+              setTargetId('');
+            }}
+            role="tab"
+            aria-selected={mode === 'hours'}
+          >
+            Agregar horas
+          </Button>
+          {activeManualTime.length > 0 && (
+            <Button
+              variant={mode === 'void_hours' ? 'primary' : 'secondary'}
+              size="sm"
+              onClick={() => {
+                setMode('void_hours');
+                setManualTargetId(activeManualTime[0]?.id ?? '');
+              }}
+              role="tab"
+              aria-selected={mode === 'void_hours'}
+            >
+              Anular horas
+            </Button>
+          )}
         </div>
 
         {mode === 'add' ? (
@@ -268,22 +380,66 @@ function CorrectionModal({
               </Field>
             </div>
             <Field label="Anular también una checada existente" hint="Opcional">
-              <Select value={targetId} onChange={(e) => setTargetId(e.target.value)}>
+              <Select value={targetId} onChange={(e) => selectTarget(e.target.value)}>
                 <option value="">— No anular ninguna —</option>
                 {activePunches.map((p) => (
                   <option key={p.id} value={p.id}>
                     {PUNCH_TYPE_LABELS[p.punch_type]} {fmtTime(p.punched_at)}
+                    {p.plant_name ? ` · ${p.plant_name}` : ''}
                   </option>
                 ))}
               </Select>
             </Field>
           </>
-        ) : (
+        ) : mode === 'void' ? (
           <Field label="Checada a anular" required>
-            <Select value={targetId} onChange={(e) => setTargetId(e.target.value)}>
+            <Select value={targetId} onChange={(e) => selectTarget(e.target.value)}>
               {activePunches.map((p) => (
                 <option key={p.id} value={p.id}>
                   {PUNCH_TYPE_LABELS[p.punch_type]} {fmtTime(p.punched_at)}
+                  {p.plant_name ? ` · ${p.plant_name}` : ''}
+                </option>
+              ))}
+            </Select>
+          </Field>
+        ) : mode === 'hours' ? (
+          <Field label="Horas a agregar" required hint="Se clasificarán automáticamente bajo las reglas de California">
+            <Input
+              type="number"
+              min="0.01"
+              step="0.01"
+              value={hours}
+              onChange={(e) => setHours(e.target.value)}
+              placeholder="Ej.: 2.50"
+            />
+          </Field>
+        ) : (
+          <Field label="Horas manuales a anular" required>
+            <Select value={manualTargetId} onChange={(e) => setManualTargetId(e.target.value)}>
+              {activeManualTime.map((entry) => (
+                <option key={entry.id} value={entry.id}>
+                  {fmtDuration(entry.duration_seconds)} · {entry.plant_name} · {entry.reason}
+                </option>
+              ))}
+            </Select>
+          </Field>
+        )}
+
+        {mode !== 'void' && mode !== 'void_hours' && (
+          <Field
+            label="Planta"
+            required
+            hint={selectedTarget?.plant_id ? 'La corrección conserva la planta de la checada original' : undefined}
+          >
+            <Select
+              value={effectivePlantId}
+              onChange={(e) => setPlantId(e.target.value)}
+              disabled={Boolean(selectedTarget?.plant_id)}
+            >
+              <option value="">Selecciona una planta…</option>
+              {plants.filter((plant) => plant.active).map((plant) => (
+                <option key={plant.id} value={plant.id}>
+                  {plant.name}
                 </option>
               ))}
             </Select>

@@ -6,14 +6,11 @@
  * editable.
  *
  * Reglas:
- * - Horas del día = Σ(shift_out − shift_in) − Σ(meal_in − meal_out), al minuto.
+ * - Tiempo neto = Σ(shift_out − shift_in) − Σ(meal_in − meal_out), al segundo.
  * - Duplicados (mismo tipo, < ventana) se ignoran automáticamente.
  * - Checadas fuera de secuencia se reportan como anomalía y se excluyen.
  * - Falta shift_out o meal_in → día incompleto (requiere corrección admin).
- * - Retardo: primer shift_in del día > inicio de turno + tolerancia.
- * - OT: primero por día (excedente del umbral diario) y luego reconciliado por
- *   semana (lo regular acumulado que exceda el umbral semanal también es OT,
- *   sin doble conteo).
+ * La clasificación California vive exclusivamente en californiaOvertime.ts.
  */
 import { DateTime } from 'luxon';
 import type { Anomaly, DayCalc, PunchType } from '../types.js';
@@ -33,8 +30,6 @@ export interface DayContext {
   toleranceMinutes?: number;
   duplicateWindowMinutes?: number;
 }
-
-const floorToMinute = (ms: number): number => Math.floor(ms / 60_000);
 
 /**
  * Elimina duplicados: mismo tipo con menos de `windowMinutes` respecto a la
@@ -145,8 +140,10 @@ export function computeDay(punches: EnginePunch[], ctx: DayContext): DayCalc {
     openShiftAnomaly = true;
   }
 
-  const workedMinutes = floorToMinute(workedMs);
-  const mealMinutes = floorToMinute(mealMs);
+  const workedSeconds = Math.max(0, Math.round(workedMs / 1000));
+  const mealSeconds = Math.max(0, Math.round(mealMs / 1000));
+  const workedMinutes = workedSeconds / 60;
+  const mealMinutes = mealSeconds / 60;
 
   // Retardo sobre el primer shift_in del día
   let late = false;
@@ -171,34 +168,12 @@ export function computeDay(punches: EnginePunch[], ctx: DayContext): DayCalc {
     shift_out: lastShiftOut?.toISOString() ?? null,
     meal_minutes: mealMinutes,
     worked_minutes: workedMinutes,
+    meal_seconds: mealSeconds,
+    worked_seconds: workedSeconds,
     late,
     late_minutes: lateMinutes,
     complete: !openMealAnomaly && !openShiftAnomaly && !hasSequenceAnomaly && firstShiftIn !== null,
     state,
     anomalies,
-  };
-}
-
-/**
- * Reconciliación semanal de overtime, sin doble conteo:
- * - OT diario: excedente sobre el umbral diario en cada día.
- * - Lo demás es "regular por día"; si su suma excede el umbral semanal, ese
- *   excedente también es OT.
- */
-export function reconcileWeekOvertime(
-  dailyWorkedMinutes: number[],
-  dailyOtThresholdMinutes: number,
-  weeklyOtThresholdMinutes: number
-): { regular_minutes: number; overtime_minutes: number } {
-  let dailyOt = 0;
-  let regularAfterDaily = 0;
-  for (const worked of dailyWorkedMinutes) {
-    dailyOt += Math.max(0, worked - dailyOtThresholdMinutes);
-    regularAfterDaily += Math.min(worked, dailyOtThresholdMinutes);
-  }
-  const weeklyExtra = Math.max(0, regularAfterDaily - weeklyOtThresholdMinutes);
-  return {
-    regular_minutes: regularAfterDaily - weeklyExtra,
-    overtime_minutes: dailyOt + weeklyExtra,
   };
 }
