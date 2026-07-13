@@ -21,6 +21,10 @@ describe('PII envelope encryption', () => {
 
   it('rejects tampered ciphertext', () => {
     const encrypted = encryptSensitiveValue('111-22-3333')!;
-    expect(() => decryptSensitiveValue(`${encrypted.slice(0, -1)}x`)).toThrow();
+    const parts = encrypted.split(':');
+    // Alter an authenticated tag byte. Replacing the final Base64 character
+    // can change only unused padding bits and is therefore not deterministic.
+    parts[3] = `${parts[3]!.startsWith('A') ? 'B' : 'A'}${parts[3]!.slice(1)}`;
+    expect(() => decryptSensitiveValue(parts.join(':'))).toThrow();
   });
 });

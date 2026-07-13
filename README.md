@@ -62,3 +62,5 @@ Variables de entorno documentadas en `server/.env.example`.
 - [Portal contable y exportes inmutables](docs/phase-7-accountant-report.md)
 - [Dashboard operativo, costos y tasas efectivas](docs/phase-8-dashboard-costs.md)
 - [Hardening de producción](docs/phase-9-production-hardening.md)
+- [Aceptación, piloto y salida](docs/phase-10-acceptance-launch.md)
+- [Propuesta comercial y comparación de mercado](docs/competitive-pricing-us-2026.md)
