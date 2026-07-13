@@ -1,5 +1,4 @@
 import { query } from '../db.js';
-import { config } from '../config.js';
 
 /** Zonas horarias permitidas (debe coincidir con ALLOWED_TIMEZONES de @clockai/shared). */
 export const ALLOWED_TIMEZONE_IDS = [
@@ -28,40 +27,68 @@ export interface AppSettings {
 
 export const DEFAULT_SETTINGS: AppSettings = {
   daily_ot_threshold_minutes: 8 * 60,
-  weekly_ot_threshold_minutes: 48 * 60,
-  week_start_day: 1,
-  photo_retention_weeks: 8,
+  weekly_ot_threshold_minutes: 40 * 60,
+  week_start_day: 7,
+  photo_retention_weeks: 13,
   duplicate_window_minutes: 2,
-  work_days: [1, 2, 3, 4, 5, 6],
-  timezone: config.plantTimezone,
+  work_days: [1, 2, 3, 4, 5, 6, 7],
+  timezone: 'America/Los_Angeles',
 };
 
-let cache: { value: AppSettings; at: number } | null = null;
+const cache = new Map<string, { value: AppSettings; at: number }>();
 const CACHE_MS = 30_000;
 
-export async function getSettings(): Promise<AppSettings> {
-  if (cache && Date.now() - cache.at < CACHE_MS) return cache.value;
-  const rows = await query<{ key: string; value: unknown }>(`SELECT key, value FROM settings`);
+async function resolveOrganizationId(organizationId?: string): Promise<string> {
+  if (organizationId) return organizationId;
+  const rows = await query<{ id: string }>(
+    `SELECT id FROM organizations WHERE active ORDER BY created_at LIMIT 1`
+  );
+  if (!rows[0]) throw new Error('No hay organización activa');
+  return rows[0].id;
+}
+
+export async function getSettings(organizationId?: string): Promise<AppSettings> {
+  const resolvedId = await resolveOrganizationId(organizationId);
+  const cached = cache.get(resolvedId);
+  if (cached && Date.now() - cached.at < CACHE_MS) return cached.value;
+  const rows = await query<{ key: string; value: unknown; timezone: string }>(
+    `SELECT s.key, s.value, o.timezone
+     FROM organizations o
+     LEFT JOIN settings s ON s.organization_id = o.id
+     WHERE o.id = $1`,
+    [resolvedId]
+  );
   const merged = { ...DEFAULT_SETTINGS } as Record<string, unknown>;
   for (const row of rows) {
-    if (row.key in merged) merged[row.key] = row.value;
+    if (row.key && row.key in merged) merged[row.key] = row.value;
   }
-  cache = { value: merged as unknown as AppSettings, at: Date.now() };
-  return cache.value;
+  if (rows[0]?.timezone) merged.timezone = rows[0].timezone;
+  const value = merged as unknown as AppSettings;
+  cache.set(resolvedId, { value, at: Date.now() });
+  return value;
 }
 
-export function invalidateSettingsCache(): void {
-  cache = null;
+export function invalidateSettingsCache(organizationId?: string): void {
+  if (organizationId) cache.delete(organizationId);
+  else cache.clear();
 }
 
-export async function updateSettings(patch: Partial<AppSettings>): Promise<AppSettings> {
-  for (const [key, value] of Object.entries(patch)) {
+export async function updateSettings(
+  organizationId: string,
+  patch: Partial<AppSettings>
+): Promise<AppSettings> {
+  const { timezone, ...storedPatch } = patch;
+  if (timezone !== undefined) {
+    await query(`UPDATE organizations SET timezone = $2 WHERE id = $1`, [organizationId, timezone]);
+  }
+  for (const [key, value] of Object.entries(storedPatch)) {
     await query(
-      `INSERT INTO settings (key, value) VALUES ($1, $2)
-       ON CONFLICT (key) DO UPDATE SET value = $2, updated_at = now()`,
-      [key, JSON.stringify(value)]
+      `INSERT INTO settings (organization_id, key, value) VALUES ($1, $2, $3)
+       ON CONFLICT (organization_id, key)
+       DO UPDATE SET value = EXCLUDED.value, updated_at = now()`,
+      [organizationId, key, JSON.stringify(value)]
     );
   }
-  invalidateSettingsCache();
-  return getSettings();
+  invalidateSettingsCache(organizationId);
+  return getSettings(organizationId);
 }

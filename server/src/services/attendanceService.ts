@@ -29,35 +29,49 @@ interface EmployeeInfo {
   tolerance_minutes: number | null;
 }
 
-async function fetchEmployees(): Promise<Map<string, EmployeeInfo>> {
+async function fetchEmployees(organizationId: string): Promise<Map<string, EmployeeInfo>> {
   const rows = await query<EmployeeInfo>(
     `SELECT e.id, e.employee_number, e.full_name, e.social_security, e.active,
             e.hired_at, e.deactivated_at,
             s.start_time AS shift_start, s.name AS shift_name, s.tolerance_minutes
      FROM employees e
-     LEFT JOIN shifts s ON s.id = e.default_shift_id`
+     LEFT JOIN shifts s ON s.id = e.default_shift_id
+     WHERE e.organization_id = $1`,
+    [organizationId]
   );
   return new Map(rows.map((r) => [r.id, r]));
 }
 
-async function fetchPunches(fromDate: string, toDate: string, timezone: string): Promise<PunchDbRow[]> {
+async function fetchPunches(
+  organizationId: string,
+  fromDate: string,
+  toDate: string,
+  timezone: string,
+  plantIds?: string[]
+): Promise<PunchDbRow[]> {
   return query<PunchDbRow>(
     `SELECT p.id, p.employee_id, p.punch_type, p.punched_at,
             (p.punched_at AT TIME ZONE $3)::date::text AS work_date
      FROM punches p
      WHERE NOT p.voided
+       AND p.organization_id = $4
+       AND ($5::uuid[] IS NULL OR p.plant_id = ANY($5::uuid[]))
        AND (p.punched_at AT TIME ZONE $3)::date BETWEEN $1::date AND $2::date
      ORDER BY p.punched_at`,
-    [fromDate, toDate, timezone]
+    [fromDate, toDate, timezone, organizationId, plantIds ?? null]
   );
 }
 
 /** Cálculo de un día local de planta para todos los empleados con checadas. */
-export async function computeDayAll(workDate: string): Promise<DayCalc[]> {
-  const settings = await getSettings();
+export async function computeDayAll(
+  organizationId: string,
+  workDate: string,
+  plantIds?: string[]
+): Promise<DayCalc[]> {
+  const settings = await getSettings(organizationId);
   const [punches, employees] = await Promise.all([
-    fetchPunches(workDate, workDate, settings.timezone),
-    fetchEmployees(),
+    fetchPunches(organizationId, workDate, workDate, settings.timezone, plantIds),
+    fetchEmployees(organizationId),
   ]);
 
   const byEmployee = new Map<string, EnginePunch[]>();
@@ -90,8 +104,12 @@ export type { DayDetailPunch, DayDetailRow };
  * Detalle de un día: por empleado, sus checadas (incluidas anuladas, para
  * transparencia) y el cálculo derivado de las vigentes.
  */
-export async function dayDetail(workDate: string): Promise<DayDetailRow[]> {
-  const settings = await getSettings();
+export async function dayDetail(
+  organizationId: string,
+  workDate: string,
+  plantIds?: string[]
+): Promise<DayDetailRow[]> {
+  const settings = await getSettings(organizationId);
   const [allPunches, employees, assignments] = await Promise.all([
     query<PunchDbRow & { source: string; voided: boolean; correction_reason: string | null; punch_area: string | null }>(
       `SELECT p.id, p.employee_id, p.punch_type, p.punched_at, p.source, p.voided,
@@ -99,17 +117,20 @@ export async function dayDetail(workDate: string): Promise<DayDetailRow[]> {
               (p.punched_at AT TIME ZONE $2)::date::text AS work_date
        FROM punches p
        LEFT JOIN areas a ON a.id = p.area_id
-       WHERE (p.punched_at AT TIME ZONE $2)::date = $1::date
+       WHERE p.organization_id = $3
+         AND ($4::uuid[] IS NULL OR p.plant_id = ANY($4::uuid[]))
+         AND (p.punched_at AT TIME ZONE $2)::date = $1::date
        ORDER BY p.punched_at`,
-      [workDate, settings.timezone]
+      [workDate, settings.timezone, organizationId, plantIds ?? null]
     ),
-    fetchEmployees(),
+    fetchEmployees(organizationId),
     query<{ employee_id: string; area_name: string }>(
       `SELECT d.employee_id, a.name AS area_name
        FROM daily_area_assignments d
        JOIN areas a ON a.id = d.area_id
-       WHERE d.work_date = $1::date`,
-      [workDate]
+       WHERE d.work_date = $1::date AND d.organization_id = $2
+         AND ($3::uuid[] IS NULL OR d.plant_id = ANY($3::uuid[]))`,
+      [workDate, organizationId, plantIds ?? null]
     ),
   ]);
 
@@ -171,13 +192,17 @@ export interface WeekComputation {
 }
 
 /** Cálculo semanal completo con reconciliación de OT y faltas. */
-export async function computeWeek(weekStart: string): Promise<WeekComputation> {
-  const settings = await getSettings();
+export async function computeWeek(
+  organizationId: string,
+  weekStart: string,
+  plantIds?: string[]
+): Promise<WeekComputation> {
+  const settings = await getSettings(organizationId);
   const start = DateTime.fromISO(weekStart, { zone: settings.timezone });
   const weekEnd = start.plus({ days: 6 }).toISODate()!;
   const [punches, employees] = await Promise.all([
-    fetchPunches(weekStart, weekEnd, settings.timezone),
-    fetchEmployees(),
+    fetchPunches(organizationId, weekStart, weekEnd, settings.timezone, plantIds),
+    fetchEmployees(organizationId),
   ]);
 
   const dates: string[] = Array.from({ length: 7 }, (_, i) => start.plus({ days: i }).toISODate()!);
@@ -249,7 +274,7 @@ export async function computeWeek(weekStart: string): Promise<WeekComputation> {
       employee_id: employeeId,
       employee_number: emp.employee_number,
       full_name: emp.full_name,
-      social_security: emp.social_security,
+      social_security: null,
       days_worked: days.filter((d) => d.worked_minutes > 0).length,
       regular_minutes,
       overtime_minutes,

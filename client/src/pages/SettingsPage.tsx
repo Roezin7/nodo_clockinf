@@ -1,13 +1,11 @@
 import { useEffect, useState } from 'react';
-import type { Area, MealWindow, Settings, Shift, User } from '@clockai/shared';
+import type { Area, MealWindow, Plant, Settings, Shift, User, UserRole } from '@clockai/shared';
 import { ALLOWED_TIMEZONES } from '@clockai/shared';
 import { api, ApiError } from '../api';
 import { useAuth } from '../hooks/useAuth';
 import { setAppTimezone } from '../time';
 import { PageHeader } from '../components/layout/PageHeader';
 import { Button, Field, Input, Select, StatusBadge, useToast } from '../components/ui';
-
-const DAY_NAMES = ['Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb', 'Dom']; // ISO 1..7
 
 export default function SettingsPage() {
   const user = useAuth();
@@ -62,7 +60,7 @@ function ThresholdsCard() {
       const updated = await api<Settings>('/api/settings', { method: 'PATCH', body: JSON.stringify(settings) });
       setSettings(updated);
       setAppTimezone(updated.timezone); // toda la UI cambia de zona al instante
-      toast('Reglas de nómina guardadas');
+      toast('Configuración guardada');
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Error al guardar');
     } finally {
@@ -73,7 +71,7 @@ function ThresholdsCard() {
   if (!settings) return <Card title="Reglas de nómina">Cargando…</Card>;
 
   return (
-    <Card title="Reglas de nómina">
+    <Card title="Política y zona horaria">
       <div className="grid gap-1">
         <Field label="Zona horaria de la planta" hint="Gobierna cortes de día, retardos, reportes y toda hora mostrada">
           <Select value={settings.timezone} onChange={(e) => setSettings({ ...settings, timezone: e.target.value })}>
@@ -84,45 +82,12 @@ function ThresholdsCard() {
             ))}
           </Select>
         </Field>
-        <div className="grid grid-cols-2 gap-4">
-          <Field label="OT diario después de (horas)">
-            <Input
-              type="number"
-              min={1}
-              max={24}
-              step={0.5}
-              value={settings.daily_ot_threshold_minutes / 60}
-              onChange={(e) =>
-                setSettings({ ...settings, daily_ot_threshold_minutes: Math.round(Number(e.target.value) * 60) })
-              }
-            />
-          </Field>
-          <Field label="OT semanal después de (horas)">
-            <Input
-              type="number"
-              min={1}
-              max={120}
-              step={0.5}
-              value={settings.weekly_ot_threshold_minutes / 60}
-              onChange={(e) =>
-                setSettings({ ...settings, weekly_ot_threshold_minutes: Math.round(Number(e.target.value) * 60) })
-              }
-            />
-          </Field>
+        <div className="mb-4 rounded-control border border-accent/20 bg-accent-subtle p-4 text-13 text-ink-secondary">
+          <p className="font-semibold text-ink">California Standard 8/40</p>
+          <p className="mt-1">8 horas regulares; 1.5× después de 8 y hasta 12; 2× después de 12. También aplica 40 horas semanales y séptimo día. Semana: domingo a sábado.</p>
+          <p className="mt-1">Esta política legal está bloqueada y no puede sustituirse por una regla interna.</p>
         </div>
         <div className="grid grid-cols-2 gap-4">
-          <Field label="La semana inicia en">
-            <Select
-              value={settings.week_start_day}
-              onChange={(e) => setSettings({ ...settings, week_start_day: Number(e.target.value) })}
-            >
-              {DAY_NAMES.map((name, i) => (
-                <option key={i + 1} value={i + 1}>
-                  {name}
-                </option>
-              ))}
-            </Select>
-          </Field>
           <Field label="Retención de fotos (semanas)">
             <Input
               type="number"
@@ -132,36 +97,6 @@ function ThresholdsCard() {
               onChange={(e) => setSettings({ ...settings, photo_retention_weeks: Number(e.target.value) })}
             />
           </Field>
-        </div>
-        <div>
-          <span className="mb-1 block text-13 font-medium text-ink">Días laborables (para contar faltas)</span>
-          <div className="flex gap-1.5">
-            {DAY_NAMES.map((name, i) => {
-              const day = i + 1;
-              const active = settings.work_days.includes(day);
-              return (
-                <button
-                  key={day}
-                  aria-pressed={active}
-                  onClick={() =>
-                    setSettings({
-                      ...settings,
-                      work_days: active
-                        ? settings.work_days.filter((d) => d !== day)
-                        : [...settings.work_days, day].sort(),
-                    })
-                  }
-                  className={`h-8 rounded-control border px-3 text-13 font-medium transition-colors duration-150 ${
-                    active
-                      ? 'border-accent bg-accent-subtle text-accent'
-                      : 'border-line bg-raised text-ink-secondary hover:bg-sunken'
-                  }`}
-                >
-                  {name}
-                </button>
-              );
-            })}
-          </div>
         </div>
         {error && (
           <p className="mt-2 text-12 font-medium text-danger" role="alert">
@@ -328,12 +263,19 @@ function AreasCard() {
 function UsersCard({ currentUserId }: { currentUserId: string }) {
   const toast = useToast();
   const [users, setUsers] = useState<User[]>([]);
-  const [form, setForm] = useState({ name: '', email: '', password: '', role: 'supervisor' as 'admin' | 'supervisor' });
+  const [plants, setPlants] = useState<Plant[]>([]);
+  const [form, setForm] = useState({
+    name: '', email: '', password: '', role: 'foreman' as Exclude<UserRole, 'platform_operator'>,
+    plant_ids: [] as string[],
+  });
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
   const load = (): void => void api<User[]>('/api/users').then(setUsers);
-  useEffect(load, []);
+  useEffect(() => {
+    load();
+    void api<Plant[]>('/api/plants').then(setPlants);
+  }, []);
 
   async function add(): Promise<void> {
     setSaving(true);
@@ -341,7 +283,7 @@ function UsersCard({ currentUserId }: { currentUserId: string }) {
     try {
       await api('/api/users', { method: 'POST', body: JSON.stringify(form) });
       toast('Usuario creado');
-      setForm({ name: '', email: '', password: '', role: 'supervisor' });
+      setForm({ name: '', email: '', password: '', role: 'foreman', plant_ids: [] });
       load();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Error al crear usuario');
@@ -393,13 +335,37 @@ function UsersCard({ currentUserId }: { currentUserId: string }) {
           <Input type="password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} />
         </Field>
         <Field label="Rol" required>
-          <Select value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value as 'admin' | 'supervisor' })}>
-            <option value="supervisor">Supervisor</option>
+          <Select
+            value={form.role}
+            onChange={(e) => {
+              const role = e.target.value as Exclude<UserRole, 'platform_operator'>;
+              setForm({ ...form, role, plant_ids: role === 'foreman' ? form.plant_ids.slice(0, 1) : [] });
+            }}
+          >
+            <option value="foreman">Foreman</option>
+            <option value="accountant">Contadora</option>
             <option value="admin">Admin</option>
           </Select>
         </Field>
+        {form.role === 'foreman' && (
+          <Field label="Planta" required>
+            <Select
+              value={form.plant_ids[0] ?? ''}
+              onChange={(e) => setForm({ ...form, plant_ids: e.target.value ? [e.target.value] : [] })}
+            >
+              <option value="">Selecciona…</option>
+              {plants.filter((plant) => plant.active).map((plant) => (
+                <option key={plant.id} value={plant.id}>{plant.name}</option>
+              ))}
+            </Select>
+          </Field>
+        )}
       </div>
-      <Button onClick={() => void add()} loading={saving} disabled={!form.name || !form.email || form.password.length < 8}>
+      <Button
+        onClick={() => void add()}
+        loading={saving}
+        disabled={!form.name || !form.email || form.password.length < 8 || (form.role === 'foreman' && form.plant_ids.length !== 1)}
+      >
         Crear usuario
       </Button>
     </Card>

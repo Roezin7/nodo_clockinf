@@ -1,13 +1,56 @@
 // Tipos compartidos entre server y client — NODO CLOCK-IN
 
-export type UserRole = 'admin' | 'supervisor';
+export type UserRole = 'platform_operator' | 'admin' | 'foreman' | 'accountant';
 
 export interface User {
   id: string;
   email: string;
   role: UserRole;
   name: string;
+  organization_id: string | null;
   active: boolean;
+  created_at: string;
+  plant_ids?: string[];
+}
+
+export interface Organization {
+  id: string;
+  name: string;
+  slug: string;
+  timezone: string;
+  active: boolean;
+  created_at: string;
+}
+
+export interface Plant {
+  id: string;
+  organization_id: string;
+  code: string;
+  name: string;
+  active: boolean;
+  created_at: string;
+}
+
+export interface Device {
+  id: string;
+  organization_id: string;
+  plant_id: string;
+  plant_name: string;
+  name: string;
+  public_id: string;
+  active: boolean;
+  last_seen_at: string | null;
+  last_sync_at: string | null;
+  app_version: string | null;
+  created_at: string;
+}
+
+export interface EmployeeRate {
+  id: string;
+  employee_id: string;
+  hourly_rate: string;
+  effective_from: string;
+  effective_to: string | null;
   created_at: string;
 }
 
@@ -43,6 +86,7 @@ export interface Area {
 
 export interface Employee {
   id: string;
+  organization_id: string;
   employee_number: number;
   full_name: string;
   social_security: string | null;
@@ -61,6 +105,10 @@ export type FaceCheckStatus = 'pending' | 'match' | 'mismatch' | 'review_ok' | '
 
 export interface Punch {
   id: string;
+  organization_id: string;
+  plant_id: string | null;
+  device_id: string | null;
+  client_event_id: string | null;
   employee_id: string;
   punch_type: PunchType;
   punched_at: string; // ISO UTC
@@ -73,6 +121,10 @@ export interface Punch {
   correction_of: string | null;
   correction_reason: string | null;
   voided: boolean;
+  captured_at: string;
+  received_at: string;
+  offline: boolean;
+  identity_status: 'verified' | 'identity_review' | 'review_approved' | 'review_rejected' | 'not_required';
   created_at: string;
 }
 

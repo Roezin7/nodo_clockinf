@@ -13,8 +13,9 @@ interface UserRow {
   id: string;
   email: string;
   password_hash: string;
-  role: 'admin' | 'supervisor';
+  role: AuthUser['role'];
   name: string;
+  organization_id: string | null;
   active: boolean;
   created_at: string;
 }
@@ -32,7 +33,25 @@ async function issueRefreshToken(userId: string): Promise<string> {
 }
 
 function publicUser(u: UserRow) {
-  return { id: u.id, email: u.email, role: u.role, name: u.name, active: u.active, created_at: u.created_at };
+  return {
+    id: u.id,
+    email: u.email,
+    role: u.role,
+    name: u.name,
+    organization_id: u.organization_id,
+    active: u.active,
+    created_at: u.created_at,
+  };
+}
+
+function authUser(u: UserRow): AuthUser {
+  return {
+    id: u.id,
+    role: u.role,
+    name: u.name,
+    email: u.email,
+    organizationId: u.organization_id,
+  };
 }
 
 const loginSchema = z.object({ email: z.string().email(), password: z.string().min(1) });
@@ -46,9 +65,9 @@ authRouter.post('/login', async (req, res) => {
   if (!user || !(await bcrypt.compare(body.password, user.password_hash))) {
     throw unauthorized('Credenciales inválidas');
   }
-  const authUser: AuthUser = { id: user.id, role: user.role, name: user.name, email: user.email };
+  const tokenUser = authUser(user);
   res.json({
-    access_token: signAccessToken(authUser),
+    access_token: signAccessToken(tokenUser),
     refresh_token: await issueRefreshToken(user.id),
     user: publicUser(user),
   });
@@ -70,9 +89,9 @@ authRouter.post('/refresh', async (req, res) => {
 
   // Rotación: el token usado se revoca y se emite uno nuevo
   await query(`UPDATE refresh_tokens SET revoked = true WHERE id = $1`, [row.id]);
-  const authUser: AuthUser = { id: user.id, role: user.role, name: user.name, email: user.email };
+  const tokenUser = authUser(user);
   res.json({
-    access_token: signAccessToken(authUser),
+    access_token: signAccessToken(tokenUser),
     refresh_token: await issueRefreshToken(user.id),
     user: publicUser(user),
   });

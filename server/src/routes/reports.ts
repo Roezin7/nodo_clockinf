@@ -4,19 +4,24 @@ import ExcelJS from 'exceljs';
 import { z } from 'zod';
 import { query, queryOne } from '../db.js';
 import { badRequest, conflict } from '../errors.js';
-import { requireAuth, requireAdmin } from '../middleware/auth.js';
+import {
+  requireAuth,
+  requireAdmin,
+  requireOrganization,
+  requireRole,
+} from '../middleware/auth.js';
 import { computeWeek, type WeekComputation } from '../services/attendanceService.js';
 import { getSettings } from '../services/settingsService.js';
 import type { WeekEmployeeCalc } from '../types.js';
 
 export const reportsRouter = Router();
-reportsRouter.use(requireAuth);
+reportsRouter.use(requireAuth, requireRole('admin', 'accountant'));
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 /** Normaliza cualquier fecha al inicio de su semana según settings.week_start_day. */
-async function normalizeWeekStart(date: string): Promise<string> {
-  const settings = await getSettings();
+async function normalizeWeekStart(organizationId: string, date: string): Promise<string> {
+  const settings = await getSettings(organizationId);
   const d = DateTime.fromISO(date, { zone: settings.timezone });
   const diff = (d.weekday - settings.week_start_day + 7) % 7;
   return d.minus({ days: diff }).toISODate()!;
@@ -32,31 +37,45 @@ interface FinalReportRow {
   generated_by_name: string;
 }
 
-async function getFinalReport(weekStart: string): Promise<FinalReportRow | null> {
+async function getFinalReport(organizationId: string, weekStart: string): Promise<FinalReportRow | null> {
   return queryOne<FinalReportRow>(
     `SELECT w.*, u.name AS generated_by_name
      FROM weekly_reports w JOIN users u ON u.id = w.generated_by
-     WHERE w.week_start = $1::date AND w.status = 'final'`,
-    [weekStart]
+     WHERE w.organization_id = $1 AND w.week_start = $2::date AND w.status = 'final'`,
+    [organizationId, weekStart]
   );
+}
+
+function hoursOnly(computation: WeekComputation): WeekComputation {
+  return {
+    ...computation,
+    employees: computation.employees.map((employee) => ({
+      ...employee,
+      social_security: null,
+      lates: 0,
+      absences: 0,
+      days: employee.days.map((day) => ({ ...day, late: false, late_minutes: 0 })),
+    })),
+  };
 }
 
 reportsRouter.get('/week/:weekStart', async (req, res) => {
   if (!DATE_RE.test(req.params.weekStart)) throw badRequest('Fecha inválida');
-  const weekStart = await normalizeWeekStart(req.params.weekStart);
+  const organizationId = requireOrganization(req);
+  const weekStart = await normalizeWeekStart(organizationId, req.params.weekStart);
 
-  const final = await getFinalReport(weekStart);
+  const final = await getFinalReport(organizationId, weekStart);
   if (final) {
     res.json({
-      ...final.data,
+      ...hoursOnly(final.data),
       status: 'final',
       finalized_at: final.generated_at,
       finalized_by: final.generated_by_name,
     });
     return;
   }
-  const computation = await computeWeek(weekStart);
-  res.json({ ...computation, status: 'draft' });
+  const computation = await computeWeek(organizationId, weekStart);
+  res.json({ ...hoursOnly(computation), status: 'draft' });
 });
 
 /**
@@ -66,11 +85,12 @@ reportsRouter.get('/week/:weekStart', async (req, res) => {
 reportsRouter.post('/week/:weekStart/finalize', requireAdmin, async (req, res) => {
   const param = String(req.params.weekStart);
   if (!DATE_RE.test(param)) throw badRequest('Fecha inválida');
-  const weekStart = await normalizeWeekStart(param);
+  const organizationId = requireOrganization(req);
+  const weekStart = await normalizeWeekStart(organizationId, param);
 
-  if (await getFinalReport(weekStart)) throw conflict('Esta semana ya está cerrada');
+  if (await getFinalReport(organizationId, weekStart)) throw conflict('Esta semana ya está cerrada');
 
-  const computation = await computeWeek(weekStart);
+  const computation = await computeWeek(organizationId, weekStart);
   if (computation.anomaly_count > 0) {
     throw conflict(
       `No se puede cerrar: hay ${computation.anomaly_count} anomalía(s) sin resolver. Corrígelas en Asistencia.`,
@@ -79,20 +99,22 @@ reportsRouter.post('/week/:weekStart/finalize', requireAdmin, async (req, res) =
   }
 
   const row = await queryOne<{ id: string }>(
-    `INSERT INTO weekly_reports (week_start, week_end, generated_by, data, status)
-     VALUES ($1::date, $2::date, $3, $4, 'final')
+    `INSERT INTO weekly_reports (organization_id, week_start, week_end, generated_by, data, status)
+     VALUES ($1, $2::date, $3::date, $4, $5, 'final')
      RETURNING id`,
-    [weekStart, computation.week_end, req.user!.id, JSON.stringify(computation)]
+    [organizationId, weekStart, computation.week_end, req.user!.id, JSON.stringify(computation)]
   );
   res.status(201).json({ ok: true, id: row!.id, week_start: weekStart });
 });
 
-reportsRouter.get('/weeks', async (_req, res) => {
+reportsRouter.get('/weeks', async (req, res) => {
   res.json(
     await query(
       `SELECT w.id, w.week_start, w.week_end, w.status, w.generated_at, u.name AS generated_by_name
        FROM weekly_reports w JOIN users u ON u.id = w.generated_by
+       WHERE w.organization_id = $1
        ORDER BY w.week_start DESC LIMIT 52`
+      , [requireOrganization(req)]
     )
   );
 });
@@ -107,25 +129,22 @@ function localTime(iso: string | null, timezone: string): string {
 }
 
 const SUMMARY_HEADERS = [
-  '# Empleado', 'Nombre', 'Seguro', 'Días trab.', 'Hrs regulares', 'Hrs OT', 'Retardos', 'Faltas', 'Total hrs',
+  '# Empleado', 'Nombre', 'Días trabajados', 'Hrs regulares', 'Hrs OT 1.5x', 'Total hrs',
 ];
 
 function summaryRow(e: WeekEmployeeCalc): (string | number)[] {
   return [
     e.employee_number,
     e.full_name,
-    e.social_security ?? '',
     e.days_worked,
     hours(e.regular_minutes),
     hours(e.overtime_minutes),
-    e.lates,
-    e.absences,
     hours(e.total_minutes),
   ];
 }
 
 const DETAIL_HEADERS = [
-  '# Empleado', 'Nombre', 'Fecha', 'Entrada', 'Salida', 'Comida (min)', 'Horas del día', 'Retardo', 'Incompleto',
+  '# Empleado', 'Nombre', 'Fecha', 'Entrada', 'Salida', 'Comida (min)', 'Horas del día', 'Incompleto',
 ];
 
 function detailRows(employees: WeekEmployeeCalc[], timezone: string): (string | number)[][] {
@@ -140,7 +159,6 @@ function detailRows(employees: WeekEmployeeCalc[], timezone: string): (string | 
         localTime(d.shift_out, timezone),
         d.meal_minutes,
         hours(d.worked_minutes),
-        d.late ? `Sí (+${d.late_minutes}m)` : '',
         d.complete ? '' : 'SÍ',
       ]);
     }
@@ -163,12 +181,13 @@ const exportSchema = z.object({
 
 reportsRouter.get('/week/:weekStart/export', async (req, res) => {
   if (!DATE_RE.test(req.params.weekStart)) throw badRequest('Fecha inválida');
-  const weekStart = await normalizeWeekStart(req.params.weekStart);
+  const organizationId = requireOrganization(req);
+  const weekStart = await normalizeWeekStart(organizationId, req.params.weekStart);
   const { format, sheet } = exportSchema.parse(req.query);
 
-  const final = await getFinalReport(weekStart);
-  const computation = final ? final.data : await computeWeek(weekStart);
-  const tz = (await getSettings()).timezone;
+  const final = await getFinalReport(organizationId, weekStart);
+  const computation = hoursOnly(final ? final.data : await computeWeek(organizationId, weekStart));
+  const tz = (await getSettings(organizationId)).timezone;
   const suffix = final ? '' : '-BORRADOR';
   const base = `nomina-semana-${weekStart}${suffix}`;
 

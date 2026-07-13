@@ -1,9 +1,6 @@
 /**
- * Seed idempotente: áreas, turnos, usuario admin y settings default.
- *
- * ⚠️ PLACEHOLDER: los horarios de los turnos (Mañana 07:00–17:00, Cleaning
- * 17:00–23:00) son provisionales. Confirmar los horarios reales con la planta
- * y ajustarlos desde el panel de Configuración antes de usar en producción.
+ * Seed idempotente para la operación acordada en Modesto:
+ * tres plantas, semana domingo-sábado y turno 05:00–13:30 con meal 09:00–09:30.
  */
 import bcrypt from 'bcryptjs';
 import { pool, query, queryOne } from './db.js';
@@ -12,46 +9,71 @@ const ADMIN_EMAIL = process.env.SEED_ADMIN_EMAIL ?? 'admin@nodo.local';
 const ADMIN_PASSWORD = process.env.SEED_ADMIN_PASSWORD ?? 'admin1234';
 
 async function seed(): Promise<void> {
-  for (const name of ['Empaque Elote', 'Empaque Espárrago', 'Cleaning', 'Shipping']) {
-    await query(`INSERT INTO areas (name) VALUES ($1) ON CONFLICT (name) DO NOTHING`, [name]);
-  }
+  const organization = await queryOne<{ id: string }>(
+    `INSERT INTO organizations (name, slug, timezone)
+     VALUES ('Modesto Packing Operations', 'modesto-packing', 'America/Los_Angeles')
+     ON CONFLICT (slug) DO UPDATE SET timezone = EXCLUDED.timezone
+     RETURNING id`
+  );
+  const organizationId = organization!.id;
 
-  const shiftCount = await queryOne<{ n: string }>(`SELECT count(*) AS n FROM shifts`);
-  if (shiftCount?.n === '0') {
+  for (const [code, name] of [
+    ['P1', 'Plant 1'],
+    ['P2', 'Plant 2'],
+    ['P3', 'Plant 3'],
+  ]) {
     await query(
-      `INSERT INTO shifts (name, start_time, end_time, tolerance_minutes, meal_windows)
-       VALUES
-        ('Mañana', '07:00', '17:00', 5, $1),
-        ('Cleaning', '17:00', '23:00', 5, '[]')`,
-      [JSON.stringify([{ name: 'Comida', start: '13:00', end: '13:30', paid: false }])]
+      `INSERT INTO plants (organization_id, code, name)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (organization_id, code) DO UPDATE SET name = EXCLUDED.name`,
+      [organizationId, code, name]
     );
-    console.log('Turnos sembrados (HORARIOS PLACEHOLDER — ajustar en Configuración)');
   }
 
-  const admin = await queryOne(`SELECT id FROM users WHERE email = $1`, [ADMIN_EMAIL]);
+  const shift = await queryOne<{ id: string }>(
+    `SELECT id FROM shifts WHERE organization_id = $1 AND name = 'Turno estándar'`,
+    [organizationId]
+  );
+  if (!shift) {
+    await query(
+      `INSERT INTO shifts
+         (organization_id, name, start_time, end_time, tolerance_minutes, meal_windows)
+       VALUES ($1, 'Turno estándar', '05:00', '13:30', 0, $2)`,
+      [
+        organizationId,
+        JSON.stringify([{ name: 'Meal', start: '09:00', end: '09:30', paid: false }]),
+      ]
+    );
+  }
+
+  const admin = await queryOne(`SELECT id FROM users WHERE lower(email) = lower($1)`, [ADMIN_EMAIL]);
   if (!admin) {
     await query(
-      `INSERT INTO users (email, password_hash, role, name) VALUES ($1, $2, 'admin', 'Administrador')`,
-      [ADMIN_EMAIL, await bcrypt.hash(ADMIN_PASSWORD, 10)]
+      `INSERT INTO users (email, password_hash, role, name, organization_id)
+       VALUES (lower($1), $2, 'admin', 'Administrador', $3)`,
+      [ADMIN_EMAIL, await bcrypt.hash(ADMIN_PASSWORD, 10), organizationId]
     );
-    console.log(`Admin creado: ${ADMIN_EMAIL} / ${ADMIN_PASSWORD} (cambiar en producción)`);
+    console.log(`Admin creado: ${ADMIN_EMAIL} (cambiar contraseña en producción)`);
   }
 
   const defaults: Record<string, unknown> = {
     daily_ot_threshold_minutes: 8 * 60,
-    weekly_ot_threshold_minutes: 48 * 60,
-    week_start_day: 1, // lunes
-    photo_retention_weeks: 8,
+    weekly_ot_threshold_minutes: 40 * 60,
+    week_start_day: 7,
+    photo_retention_weeks: 13,
     duplicate_window_minutes: 2,
+    work_days: [1, 2, 3, 4, 5, 6, 7],
   };
   for (const [key, value] of Object.entries(defaults)) {
     await query(
-      `INSERT INTO settings (key, value) VALUES ($1, $2) ON CONFLICT (key) DO NOTHING`,
-      [key, JSON.stringify(value)]
+      `INSERT INTO settings (organization_id, key, value)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (organization_id, key) DO NOTHING`,
+      [organizationId, key, JSON.stringify(value)]
     );
   }
 
-  console.log('Seed completo.');
+  console.log('Seed de Modesto completo.');
 }
 
 seed()

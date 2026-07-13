@@ -13,6 +13,7 @@ import { attendanceRouter, assignmentsRouter } from './routes/attendance.js';
 import { reportsRouter } from './routes/reports.js';
 import { settingsRouter } from './routes/settings.js';
 import { usersRouter } from './routes/users.js';
+import { devicesRouter, organizationRouter, plantsRouter } from './routes/organization.js';
 import { storageIsLocal, LOCAL_DIR } from './storage.js';
 
 export function createApp(): express.Express {
@@ -47,6 +48,9 @@ export function createApp(): express.Express {
   app.use('/api/reports', reportsRouter);
   app.use('/api/settings', settingsRouter);
   app.use('/api/users', usersRouter);
+  app.use('/api/organization', organizationRouter);
+  app.use('/api/plants', plantsRouter);
+  app.use('/api/devices', devicesRouter);
 
   // Solo dev: sirve las fotos guardadas en disco local (sin R2 configurado)
   if (storageIsLocal) {

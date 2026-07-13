@@ -3,11 +3,14 @@ import jwt from 'jsonwebtoken';
 import { config } from '../config.js';
 import { forbidden, unauthorized } from '../errors.js';
 
+export type UserRole = 'platform_operator' | 'admin' | 'foreman' | 'accountant';
+
 export interface AuthUser {
   id: string;
-  role: 'admin' | 'supervisor';
+  role: UserRole;
   name: string;
   email: string;
+  organizationId: string | null;
 }
 
 declare global {
@@ -21,7 +24,7 @@ declare global {
 
 export function signAccessToken(user: AuthUser): string {
   return jwt.sign(
-    { role: user.role, name: user.name, email: user.email },
+    { role: user.role, name: user.name, email: user.email, organization_id: user.organizationId },
     config.jwtSecret,
     { subject: user.id, expiresIn: config.accessTokenTtl } as jwt.SignOptions
   );
@@ -37,6 +40,7 @@ export function requireAuth(req: Request, _res: Response, next: NextFunction): v
       role: payload.role as AuthUser['role'],
       name: payload.name as string,
       email: payload.email as string,
+      organizationId: (payload.organization_id as string | undefined) ?? null,
     };
     next();
   } catch {
@@ -47,6 +51,23 @@ export function requireAuth(req: Request, _res: Response, next: NextFunction): v
 export function requireAdmin(req: Request, _res: Response, next: NextFunction): void {
   if (req.user?.role !== 'admin') throw forbidden('Requiere rol admin');
   next();
+}
+
+export function requirePlatformOperator(req: Request, _res: Response, next: NextFunction): void {
+  if (req.user?.role !== 'platform_operator') throw forbidden('Requiere operador de plataforma');
+  next();
+}
+
+export function requireRole(...roles: UserRole[]) {
+  return (req: Request, _res: Response, next: NextFunction): void => {
+    if (!req.user || !roles.includes(req.user.role)) throw forbidden('Permiso denegado');
+    next();
+  };
+}
+
+export function requireOrganization(req: Request): string {
+  if (!req.user?.organizationId) throw forbidden('El usuario no pertenece a una organización');
+  return req.user.organizationId;
 }
 
 /** Autenticación del kiosco: token estático de dispositivo en header. */

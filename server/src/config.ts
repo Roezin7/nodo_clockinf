@@ -16,7 +16,7 @@ export const config = {
   accessTokenTtl: process.env.ACCESS_TOKEN_TTL ?? '15m',
   refreshTokenTtlDays: parseInt(process.env.REFRESH_TOKEN_TTL_DAYS ?? '30', 10),
   kioskDeviceToken: required('KIOSK_DEVICE_TOKEN'),
-  plantTimezone: process.env.PLANT_TIMEZONE ?? 'America/Mexico_City',
+  plantTimezone: process.env.PLANT_TIMEZONE ?? 'America/Los_Angeles',
   s3: {
     endpoint: process.env.S3_ENDPOINT ?? '',
     bucket: process.env.S3_BUCKET ?? 'clockai-photos',

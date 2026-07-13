@@ -10,7 +10,7 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
 } from 'lucide-react';
-import type { Settings } from '@clockai/shared';
+import type { Organization, UserRole } from '@clockai/shared';
 import { useAuth } from './hooks/useAuth';
 import { api, logout } from './api';
 import { setAppTimezone } from './time';
@@ -25,11 +25,11 @@ import SettingsPage from './pages/SettingsPage';
 import StyleguidePage from './pages/StyleguidePage';
 
 const NAV = [
-  { to: '/dashboard', label: 'Hoy', icon: LayoutDashboard },
-  { to: '/employees', label: 'Empleados', icon: Users },
-  { to: '/attendance', label: 'Asistencia', icon: CalendarCheck },
-  { to: '/reports', label: 'Reporte semanal', icon: FileSpreadsheet },
-  { to: '/settings', label: 'Configuración', icon: SettingsIcon },
+  { to: '/dashboard', label: 'Hoy', icon: LayoutDashboard, roles: ['admin', 'foreman'] },
+  { to: '/employees', label: 'Empleados', icon: Users, roles: ['admin', 'foreman'] },
+  { to: '/attendance', label: 'Asistencia', icon: CalendarCheck, roles: ['admin', 'foreman'] },
+  { to: '/reports', label: 'Reporte semanal', icon: FileSpreadsheet, roles: ['admin', 'accountant'] },
+  { to: '/settings', label: 'Configuración', icon: SettingsIcon, roles: ['admin'] },
 ] as const;
 
 const SIDEBAR_KEY = 'clockai.sidebar.collapsed';
@@ -42,8 +42,8 @@ function Shell({ children }: { children: React.ReactNode }) {
   // La zona horaria de la planta gobierna TODA la presentación de horas
   useEffect(() => {
     if (user) {
-      void api<Settings>('/api/settings')
-        .then((s) => setAppTimezone(s.timezone))
+      void api<Organization>('/api/organization')
+        .then((organization) => setAppTimezone(organization.timezone))
         .catch(() => {});
     }
   }, [user]);
@@ -77,7 +77,7 @@ function Shell({ children }: { children: React.ReactNode }) {
         </div>
 
         <nav className="flex-1 space-y-0.5 py-3" aria-label="Principal">
-          {NAV.map(({ to, label, icon: Icon }) => (
+          {NAV.filter(({ roles }) => (roles as readonly UserRole[]).includes(user.role)).map(({ to, label, icon: Icon }) => (
             <NavLink
               key={to}
               to={to}
