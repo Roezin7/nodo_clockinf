@@ -3,6 +3,7 @@
  * Todo se deriva de `punches` no anuladas; nada se almacena.
  */
 import { DateTime } from 'luxon';
+import type { PoolClient, QueryResultRow } from 'pg';
 import { query } from '../db.js';
 import { computeDay, type EnginePunch } from './calcEngine.js';
 import { classifyCaliforniaOvertime, type CaliforniaWorkChunk } from './californiaOvertime.js';
@@ -56,8 +57,20 @@ interface EmployeeInfo {
   tolerance_minutes: number | null;
 }
 
-async function fetchEmployees(organizationId: string): Promise<Map<string, EmployeeInfo>> {
-  const rows = await query<EmployeeInfo>(
+async function scopedQuery<T extends QueryResultRow>(
+  client: PoolClient | undefined,
+  text: string,
+  params: unknown[],
+): Promise<T[]> {
+  return client ? (await client.query<T>(text, params)).rows : query<T>(text, params);
+}
+
+async function fetchEmployees(
+  organizationId: string,
+  client?: PoolClient,
+): Promise<Map<string, EmployeeInfo>> {
+  const rows = await scopedQuery<EmployeeInfo>(
+    client,
     `SELECT e.id, e.employee_number, e.full_name, e.social_security, e.active,
             e.hired_at, e.deactivated_at,
             s.start_time AS shift_start, s.name AS shift_name, s.tolerance_minutes
@@ -74,9 +87,11 @@ async function fetchPunches(
   fromDate: string,
   toDate: string,
   timezone: string,
-  plantIds?: string[]
+  plantIds?: string[],
+  client?: PoolClient,
 ): Promise<PunchDbRow[]> {
-  return query<PunchDbRow>(
+  return scopedQuery<PunchDbRow>(
+    client,
     `SELECT p.id, p.employee_id, p.punch_type, p.punched_at,
             (p.punched_at AT TIME ZONE $3)::date::text AS work_date
      FROM punches p
@@ -93,9 +108,11 @@ async function fetchSegmentPunches(
   organizationId: string,
   weekStart: string,
   weekEnd: string,
-  timezone: string
+  timezone: string,
+  client?: PoolClient,
 ): Promise<SegmentPunchDbRow[]> {
-  return query<SegmentPunchDbRow>(
+  return scopedQuery<SegmentPunchDbRow>(
+    client,
     `SELECT id, employee_id, punch_type, punched_at, plant_id
      FROM punches
      WHERE organization_id = $1 AND NOT voided
@@ -312,24 +329,31 @@ export interface WeekComputation {
 export async function computeWeek(
   organizationId: string,
   weekStart: string,
-  plantIds?: string[]
+  plantIds?: string[],
+  client?: PoolClient,
 ): Promise<WeekComputation> {
   const settings = await getSettings(organizationId);
   const start = DateTime.fromISO(weekStart, { zone: settings.timezone });
   const weekEnd = start.plus({ days: 6 }).toISODate()!;
-  const [punches, segmentPunches, manualEntries, employees] = await Promise.all([
-    fetchPunches(organizationId, weekStart, weekEnd, settings.timezone, plantIds),
-    fetchSegmentPunches(organizationId, weekStart, weekEnd, settings.timezone),
-    query<ManualTimeDbRow>(
-      `SELECT id, employee_id, plant_id, work_date, duration_seconds, created_at
-       FROM manual_time_entries
-       WHERE organization_id = $1 AND voided_at IS NULL
-         AND work_date BETWEEN $2::date AND $3::date
-       ORDER BY employee_id, work_date, created_at, id`,
-      [organizationId, weekStart, weekEnd]
-    ),
-    fetchEmployees(organizationId),
-  ]);
+  // Keep transaction-scoped reads sequential on one pg client. Besides being
+  // forward-compatible with pg, all close inputs now share one unambiguous
+  // repeatable-read snapshot.
+  const punches = await fetchPunches(
+    organizationId, weekStart, weekEnd, settings.timezone, plantIds, client,
+  );
+  const segmentPunches = await fetchSegmentPunches(
+    organizationId, weekStart, weekEnd, settings.timezone, client,
+  );
+  const manualEntries = await scopedQuery<ManualTimeDbRow>(
+    client,
+    `SELECT id, employee_id, plant_id, work_date, duration_seconds, created_at
+     FROM manual_time_entries
+     WHERE organization_id = $1 AND voided_at IS NULL
+       AND work_date BETWEEN $2::date AND $3::date
+     ORDER BY employee_id, work_date, created_at, id`,
+    [organizationId, weekStart, weekEnd],
+  );
+  const employees = await fetchEmployees(organizationId, client);
 
   const dates: string[] = Array.from({ length: 7 }, (_, i) => start.plus({ days: i }).toISODate()!);
 

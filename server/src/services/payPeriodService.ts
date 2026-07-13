@@ -3,7 +3,7 @@ import { DateTime } from 'luxon';
 import type { PoolClient } from 'pg';
 import { conflict } from '../errors.js';
 
-export type PayPeriodStatus = 'open' | 'final' | 'reopened';
+export type PayPeriodStatus = 'open' | 'ready_for_review' | 'final' | 'reopened';
 
 export interface PayPeriodRow {
   id: string;
@@ -71,6 +71,12 @@ export async function ensurePeriodOpen(
   const period = await lockPayPeriod(client, organizationId, workDate, timezone);
   if (period.status === 'final') {
     throw conflict('La semana está cerrada; el admin debe reabrirla antes de corregir', 'period_final');
+  }
+  if (period.status === 'ready_for_review') {
+    throw conflict(
+      'La semana está en revisión; el admin debe devolverla a edición antes de corregir',
+      'period_ready_for_review',
+    );
   }
   return period;
 }

@@ -59,3 +59,4 @@ Variables de entorno documentadas en `server/.env.example`.
 - [Kiosco y sincronización offline](docs/phase-4-kiosk-reliability.md)
 - [Identidad facial y revisión humana](docs/phase-5-facial-identity.md)
 - [Incidencias operativas y notificaciones](docs/phase-6-operational-exceptions.md)
+- [Portal contable y exportes inmutables](docs/phase-7-accountant-report.md)
