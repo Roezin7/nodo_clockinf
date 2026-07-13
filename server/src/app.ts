@@ -1,5 +1,7 @@
 import express from 'express';
 import cors from 'cors';
+import helmet from 'helmet';
+import crypto from 'node:crypto';
 import path from 'node:path';
 import fs from 'node:fs';
 import rateLimit from 'express-rate-limit';
@@ -21,17 +23,68 @@ import { operationalExceptionsRouter } from './routes/operationalExceptions.js';
 import { notificationsRouter } from './routes/notifications.js';
 import { dashboardRouter } from './routes/dashboard.js';
 import { storageIsLocal, LOCAL_DIR, verifyLocalPhotoSignature } from './storage.js';
+import { storage } from './storage.js';
+import { pool } from './db.js';
+import { config } from './config.js';
 
 export function createApp(): express.Express {
   const app = express();
   // Detrás del proxy de la plataforma (Traefik en Coolify, Render): un solo salto.
   // Sin esto, express-rate-limit v7 rechaza peticiones que traen X-Forwarded-For.
   app.set('trust proxy', 1);
-  app.use(cors());
+  app.disable('x-powered-by');
+  app.use((req, res, next) => {
+    const requestId = crypto.randomUUID();
+    res.setHeader('X-Request-Id', requestId);
+    res.locals.requestId = requestId;
+    next();
+  });
+  app.use(helmet({
+    crossOriginEmbedderPolicy: false,
+    referrerPolicy: { policy: 'no-referrer' },
+    contentSecurityPolicy: {
+      useDefaults: true,
+      directives: {
+        "default-src": ["'self'"],
+        "script-src": ["'self'"],
+        "style-src": ["'self'", "'unsafe-inline'"],
+        "img-src": ["'self'", 'data:', 'blob:', 'https:'],
+        "connect-src": ["'self'"],
+        "worker-src": ["'self'", 'blob:'],
+        "object-src": ["'none'"],
+        "base-uri": ["'self'"],
+        "frame-ancestors": ["'none'"],
+        "form-action": ["'self'"],
+      },
+    },
+  }));
+  app.use(cors({
+    origin: (origin, callback) => {
+      if (!origin || config.corsOrigins.includes(origin)) return callback(null, true);
+      // No CORS header means browsers block cross-origin reads. Do not throw:
+      // SameSite refresh cookies and bearer auth still protect state changes.
+      return callback(null, false);
+    },
+    credentials: true,
+    methods: ['GET', 'POST', 'PATCH', 'DELETE'],
+  }));
   app.use(express.json({ limit: '1mb' }));
 
-  app.get('/api/health', (_req, res) => {
+  app.get('/api/health/live', (_req, res) => {
     res.json({ ok: true });
+  });
+  app.get('/api/health', async (_req, res) => {
+    try {
+      await pool.query('SELECT 1');
+      await storage.healthcheck();
+      res.setHeader('Cache-Control', 'no-store');
+      res.json({ ok: true });
+    } catch (error) {
+      console.error(JSON.stringify({
+        level: 'error', event: 'readiness_failed', message: String(error),
+      }));
+      res.status(503).setHeader('Cache-Control', 'no-store').json({ ok: false });
+    }
   });
 
   // Anti abuso: el kiosco legítimo hace ~12 checadas/min como máximo
@@ -127,7 +180,14 @@ export function createApp(): express.Express {
       res.status(err.status).json({ error: err.message, code: err.code, details: err.details });
       return;
     }
-    console.error(err);
+    console.error(JSON.stringify({
+      level: 'error',
+      event: 'request_failed',
+      request_id: res.locals.requestId,
+      method: _req.method,
+      path: _req.path,
+      message: err instanceof Error ? err.message : String(err),
+    }));
     res.status(500).json({ error: 'Error interno' });
   });
 

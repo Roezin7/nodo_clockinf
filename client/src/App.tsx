@@ -11,6 +11,7 @@ import {
   LogOut,
   PanelLeftClose,
   PanelLeftOpen,
+  KeyRound,
 } from 'lucide-react';
 import type { Organization, UserRole } from '@clockai/shared';
 import { useAuth } from './hooks/useAuth';
@@ -27,6 +28,7 @@ import SettingsPage from './pages/SettingsPage';
 import StyleguidePage from './pages/StyleguidePage';
 import IdentityReviewsPage from './pages/IdentityReviewsPage';
 import ExceptionsPage from './pages/ExceptionsPage';
+import ProfilePage from './pages/ProfilePage';
 import { NotificationsBell } from './components/NotificationsBell';
 import { canAccessRoute, landingRoute, type ProtectedRoute } from './auth/accessPolicy';
 
@@ -38,6 +40,7 @@ const NAV = [
   { to: '/identity-reviews', label: 'Identidad', icon: ShieldCheck, roles: ['admin', 'foreman'] },
   { to: '/reports', label: 'Reporte semanal', icon: FileSpreadsheet, roles: ['admin', 'accountant'] },
   { to: '/settings', label: 'Configuración', icon: SettingsIcon, roles: ['admin'] },
+  { to: '/profile', label: 'Mi cuenta', icon: KeyRound, roles: ['admin', 'foreman', 'accountant'] },
 ] as const;
 
 const SIDEBAR_KEY = 'clockai.sidebar.collapsed';
@@ -179,6 +182,7 @@ export default function App() {
         <Route path="/identity" element={<Navigate to="/identity-reviews" replace />} />
         <Route path="/reports" element={<RoleGuard route="/reports"><Shell><ReportsPage /></Shell></RoleGuard>} />
         <Route path="/settings" element={<RoleGuard route="/settings"><Shell><SettingsPage /></Shell></RoleGuard>} />
+        <Route path="/profile" element={<RoleGuard route="/profile"><Shell><ProfilePage /></Shell></RoleGuard>} />
         <Route path="/styleguide" element={<RoleGuard route="/styleguide"><Shell><StyleguidePage /></Shell></RoleGuard>} />
         <Route path="*" element={<RoleHome />} />
       </Routes>

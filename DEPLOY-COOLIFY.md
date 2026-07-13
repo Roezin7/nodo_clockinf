@@ -22,10 +22,11 @@ Una sola app (Dockerfile en la raíz: API + cliente estático) + una Postgres lo
 | `DATABASE_URL` | URL interna de la Postgres de Coolify (paso 1), p. ej. `postgres://postgres:<password>@lx9hp7sstidgg2k40npad2hv:5432/postgres` — ⚠️ nunca commitear la contraseña real |
 | `JWT_SECRET` | `openssl rand -hex 32` |
 | `JWT_REFRESH_SECRET` | `openssl rand -hex 32` (distinto al anterior) |
+| `PII_ENCRYPTION_KEY` | `openssl rand -base64 32` (distinta; cifra SSN en la base) |
 | `PLANT_TIMEZONE` | `America/Los_Angeles` (la zona operativa real vive en cada organización/planta) |
 | `FACE_PROVIDER` | `review_only` para el arranque seguro; `aws_rekognition` sólo habilita comparación 1:1 y no equivale a prueba de vida |
 | `VAPID_SUBJECT` / `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` | (opcional) las tres salidas de una identidad generada con `npx web-push generate-vapid-keys`; dejar las tres ausentes desactiva sólo Web Push |
-| `SEED_ADMIN_EMAIL` / `SEED_ADMIN_PASSWORD` | (opcional) credenciales del admin que crea el seed; si no, usa `admin@nodo.local / admin1234` — **cambiar** |
+| `CORS_ORIGINS` | vacío en producción mismo-origen; en desarrollo, p. ej. `http://localhost:5173` |
 
 ### Fotos
 
@@ -41,8 +42,9 @@ los teléfonos reales del admin y los foremen.
 
 ## 3. Primer deploy
 
-1. **Deploy.** El contenedor ejecuta migraciones + seed + server en cada arranque. Verificar en logs `NODO CLOCK-IN server escuchando en :3001`.
-2. Entrar con el admin (`admin@nodo.local / admin1234` si no definiste `SEED_ADMIN_*`), **cambiar la contraseña** y validar las tres plantas y el turno 05:00–13:30.
+1. Antes del primer deploy, ejecutar una sola vez el bootstrap desde un terminal seguro con `SEED_ADMIN_EMAIL`, `SEED_ADMIN_PASSWORD` (mínimo 12 caracteres) y `ALLOW_PRODUCTION_BOOTSTRAP=yes`: `cd server && npm run seed`. Guardar la contraseña en el gestor corporativo, no en este repositorio.
+2. **Deploy.** El contenedor ejecuta migraciones, cifra cualquier SSN legacy pendiente y arranca el server; nunca crea cuentas. Verificar `GET /api/health` y el evento JSON `server_listening`.
+3. Entrar con el admin creado, validar las tres plantas y el turno 05:00–13:30.
 
 ## Notas
 

@@ -14,7 +14,7 @@ describe('matriz central de rutas por rol', () => {
   it('mantiene una matriz exhaustiva y destinos accesibles para cada rol de organización', () => {
     const roles: UserRole[] = ['admin', 'foreman', 'accountant'];
     expect(Object.keys(PROTECTED_ROUTE_ROLES).sort()).toEqual([
-      '/attendance', '/dashboard', '/employees', '/exceptions', '/identity-reviews', '/reports', '/settings', '/styleguide',
+      '/attendance', '/dashboard', '/employees', '/exceptions', '/identity-reviews', '/profile', '/reports', '/settings', '/styleguide',
     ]);
     for (const role of roles) {
       const destination = landingRoute(role);
@@ -24,5 +24,6 @@ describe('matriz central de rutas por rol', () => {
     expect(canAccessRoute('foreman', '/exceptions')).toBe(true);
     expect(canAccessRoute('foreman', '/settings')).toBe(false);
     expect(canAccessRoute('admin', '/settings')).toBe(true);
+    expect(canAccessRoute('accountant', '/profile')).toBe(true);
   });
 });

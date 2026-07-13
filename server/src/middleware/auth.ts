@@ -13,6 +13,7 @@ export interface AuthUser {
   name: string;
   email: string;
   organizationId: string | null;
+  sessionVersion?: number;
 }
 
 export interface AuthDevice {
@@ -35,28 +36,57 @@ declare global {
 
 export function signAccessToken(user: AuthUser): string {
   return jwt.sign(
-    { role: user.role, name: user.name, email: user.email, organization_id: user.organizationId },
+    {
+      role: user.role,
+      name: user.name,
+      email: user.email,
+      organization_id: user.organizationId,
+      session_version: user.sessionVersion ?? 1,
+    },
     config.jwtSecret,
     { subject: user.id, expiresIn: config.accessTokenTtl } as jwt.SignOptions
   );
 }
 
-export function requireAuth(req: Request, _res: Response, next: NextFunction): void {
+export async function requireAuth(req: Request, _res: Response, next: NextFunction): Promise<void> {
   const header = req.headers.authorization;
   if (!header?.startsWith('Bearer ')) throw unauthorized('Falta token');
+  let payload: jwt.JwtPayload;
   try {
-    const payload = jwt.verify(header.slice(7), config.jwtSecret) as jwt.JwtPayload;
-    req.user = {
-      id: payload.sub as string,
-      role: payload.role as AuthUser['role'],
-      name: payload.name as string,
-      email: payload.email as string,
-      organizationId: (payload.organization_id as string | undefined) ?? null,
-    };
-    next();
+    payload = jwt.verify(header.slice(7), config.jwtSecret) as jwt.JwtPayload;
   } catch {
     throw unauthorized('Token inválido o expirado');
   }
+  if (!payload.sub || !Number.isInteger(payload.session_version)) {
+    throw unauthorized('Token de sesión inválido');
+  }
+  const current = await queryOne<{
+    id: string;
+    role: AuthUser['role'];
+    name: string;
+    email: string;
+    organization_id: string | null;
+    session_version: number;
+  }>(
+    `SELECT u.id, u.role, u.name, u.email, u.organization_id, u.session_version
+     FROM users u
+     LEFT JOIN organizations o ON o.id = u.organization_id
+     WHERE u.id = $1 AND u.active
+       AND (u.role = 'platform_operator' OR o.active)`,
+    [payload.sub],
+  );
+  if (!current || current.session_version !== payload.session_version) {
+    throw unauthorized('Sesión revocada');
+  }
+  req.user = {
+    id: current.id,
+    role: current.role,
+    name: current.name,
+    email: current.email,
+    organizationId: current.organization_id,
+    sessionVersion: current.session_version,
+  };
+  next();
 }
 
 export function requireAdmin(req: Request, _res: Response, next: NextFunction): void {

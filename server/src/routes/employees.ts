@@ -12,6 +12,7 @@ import {
   requireRole,
 } from '../middleware/auth.js';
 import { recordAudit } from '../services/auditService.js';
+import { decryptSensitiveValue, encryptSensitiveValue } from '../services/piiCrypto.js';
 import { storage } from '../storage.js';
 import {
   FACE_IMAGE_MAX_BYTES,
@@ -47,6 +48,11 @@ export interface EmployeeRow {
   hired_at: string | null;
   deactivated_at: string | null;
   created_at: string;
+}
+
+function adminEmployeeResponse(row: EmployeeRow): Omit<EmployeeRow, 'enrollment_photo_key'> {
+  const { enrollment_photo_key: _internalPhotoKey, ...publicEmployee } = row;
+  return { ...publicEmployee, social_security: decryptSensitiveValue(row.social_security) };
 }
 
 const SAFE_COLS = `id, organization_id, employee_number, full_name, default_shift_id,
@@ -190,9 +196,9 @@ employeesRouter.get('/:id', async (req, res) => {
         [req.params.id, organizationId]
   );
   if (!row) throw notFound('Empleado no encontrado');
-  const { enrollment_photo_key: enrollmentPhotoKey, ...publicRow } = row;
+  const enrollmentPhotoKey = row.enrollment_photo_key;
   res.json({
-    ...publicRow,
+    ...(admin ? adminEmployeeResponse(row) : row),
     enrollment_photo_url:
       admin && enrollmentPhotoKey ? await storage.viewUrl(enrollmentPhotoKey) : undefined,
   });
@@ -348,7 +354,7 @@ employeesRouter.post('/', requireAdmin, async (req, res) => {
       [
         organizationId,
         body.full_name,
-        body.social_security ?? null,
+        encryptSensitiveValue(body.social_security),
         body.phone ?? null,
         body.default_shift_id ?? null,
         body.hired_at ?? null,
@@ -405,8 +411,9 @@ employeesRouter.post('/', requireAdmin, async (req, res) => {
     );
     return { row, currentRate };
   });
-  const { enrollment_photo_key: _internalPhotoKey, ...publicEmployee } = result.row;
-  res.status(201).json({ ...publicEmployee, current_rate: result.currentRate, pin });
+  res.status(201).json({
+    ...adminEmployeeResponse(result.row), current_rate: result.currentRate, pin,
+  });
 });
 
 const patchSchema = employeeFieldsSchema.partial().strict();
@@ -417,7 +424,7 @@ employeesRouter.patch('/:id', requireAdmin, async (req, res) => {
   const sets: string[] = [];
   const params: unknown[] = [];
   for (const [col, value] of Object.entries(body)) {
-    params.push(value);
+    params.push(col === 'social_security' ? encryptSensitiveValue(value as string | null) : value);
     sets.push(`${col} = $${params.length}`);
   }
   if (!sets.length) throw badRequest('Nada que actualizar');
@@ -467,13 +474,12 @@ employeesRouter.patch('/:id', requireAdmin, async (req, res) => {
     );
     return updated.rows[0]!;
   });
-  const { enrollment_photo_key: _internalPhotoKey, ...publicEmployee } = row;
-  res.json(publicEmployee);
+  res.json(adminEmployeeResponse(row));
 });
 
 employeesRouter.post('/:id/deactivate', requireAdmin, async (req, res) => {
   const organizationId = requireOrganization(req);
-  const row = await queryOne<{ id: string; enrollment_photo_key: string | null }>(
+  const row = await queryOne<EmployeeRow>(
     `UPDATE employees
      SET active = false, deactivated_at = current_date,
          enrollment_photo_key = NULL, current_biometric_enrollment_id = NULL
@@ -488,8 +494,7 @@ employeesRouter.post('/:id/deactivate', requireAdmin, async (req, res) => {
     entityType: 'employee',
     entityId: row.id,
   });
-  const { enrollment_photo_key: _internalPhotoKey, ...publicEmployee } = row;
-  res.json(publicEmployee);
+  res.json(adminEmployeeResponse(row));
 });
 
 employeesRouter.post('/:id/reactivate', requireAdmin, async (req, res) => {
@@ -507,8 +512,7 @@ employeesRouter.post('/:id/reactivate', requireAdmin, async (req, res) => {
     entityType: 'employee',
     entityId: row.id,
   });
-  const { enrollment_photo_key: _internalPhotoKey, ...publicEmployee } = row;
-  res.json(publicEmployee);
+  res.json(adminEmployeeResponse(row));
 });
 
 employeesRouter.post('/:id/reset-pin', requireAdmin, async (req, res) => {

@@ -1,11 +1,11 @@
 import { useEffect, useState } from 'react';
 import type { User } from '@clockai/shared';
-import { getStoredAuth } from '../api';
+import { getKnownUser } from '../api';
 
 export function useAuth(): User | null {
-  const [user, setUser] = useState<User | null>(() => getStoredAuth()?.user ?? null);
+  const [user, setUser] = useState<User | null>(() => getKnownUser());
   useEffect(() => {
-    const onChange = () => setUser(getStoredAuth()?.user ?? null);
+    const onChange = () => setUser(getKnownUser());
     window.addEventListener('clockai-auth-changed', onChange);
     window.addEventListener('storage', onChange);
     return () => {

@@ -6,7 +6,7 @@ services:
     runtime: node
     plan: starter
     buildCommand: npm install && npm run build --workspace=client && npm run build --workspace=server
-    startCommand: cd server && npm run migrate && npm start
+    startCommand: cd server && npm run migrate && node dist/scripts/encryptPii.js && npm start
     healthCheckPath: /api/health
     envVars:
       - key: DATABASE_URL
@@ -17,6 +17,8 @@ services:
         generateValue: true
       - key: JWT_REFRESH_SECRET
         generateValue: true
+      - key: PII_ENCRYPTION_KEY
+        sync: false
       - key: PLANT_TIMEZONE
         value: America/Los_Angeles
       - key: FACE_PROVIDER

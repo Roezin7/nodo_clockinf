@@ -28,7 +28,7 @@ export async function runNotificationWorkersOnce(): Promise<{
  * coordination; this process-local guard only prevents overlapping ticks in
  * one Node process.
  */
-export function scheduleNotificationWorkers(): void {
+export function scheduleNotificationWorkers(): () => void {
   let running = false;
   const run = (): void => {
     if (running) return;
@@ -53,6 +53,10 @@ export function scheduleNotificationWorkers(): void {
 
   // The exception reconciler starts after 15 seconds. This earlier tick also
   // drains intents committed immediately before a deploy/restart.
-  setTimeout(run, 5_000);
-  setInterval(run, 15_000);
+  const timeout = setTimeout(run, 5_000);
+  const interval = setInterval(run, 15_000);
+  return () => {
+    clearTimeout(timeout);
+    clearInterval(interval);
+  };
 }

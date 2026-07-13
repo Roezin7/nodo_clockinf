@@ -3,7 +3,14 @@
  * Si no hay credenciales S3 configuradas, usa disco local (./uploads-local) —
  * SOLO para desarrollo; en producción las fotos nunca viven en el disco del server.
  */
-import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand, ListObjectsV2Command } from '@aws-sdk/client-s3';
+import {
+  S3Client,
+  PutObjectCommand,
+  GetObjectCommand,
+  DeleteObjectCommand,
+  ListObjectsV2Command,
+  HeadBucketCommand,
+} from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -18,6 +25,7 @@ export interface PhotoStorage {
   remove(key: string): Promise<void>;
   /** Lista keys bajo un prefijo (para el job de retención). */
   list(prefix: string): Promise<string[]>;
+  healthcheck(): Promise<void>;
 }
 
 class S3Storage implements PhotoStorage {
@@ -65,6 +73,10 @@ class S3Storage implements PhotoStorage {
       token = res.NextContinuationToken;
     } while (token);
     return keys;
+  }
+
+  async healthcheck(): Promise<void> {
+    await this.client.send(new HeadBucketCommand({ Bucket: config.s3.bucket }));
   }
 }
 
@@ -115,6 +127,11 @@ class LocalStorage implements PhotoStorage {
     }
     await walk(base);
     return keys;
+  }
+
+  async healthcheck(): Promise<void> {
+    // Local storage is never a production option; in development/test the
+    // process can create the directory on its first photo write.
   }
 }
 

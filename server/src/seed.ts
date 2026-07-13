@@ -5,14 +5,27 @@
 import bcrypt from 'bcryptjs';
 import { pool, query, queryOne } from './db.js';
 
-const ADMIN_EMAIL = process.env.SEED_ADMIN_EMAIL ?? 'admin@nodo.local';
-const ADMIN_PASSWORD = process.env.SEED_ADMIN_PASSWORD ?? 'admin1234';
+function requiredBootstrapVariable(name: 'SEED_ADMIN_EMAIL' | 'SEED_ADMIN_PASSWORD'): string {
+  const value = process.env[name];
+  if (!value) throw new Error(`${name} es obligatorio`);
+  return value;
+}
+
+const ADMIN_EMAIL = requiredBootstrapVariable('SEED_ADMIN_EMAIL');
+const ADMIN_PASSWORD = requiredBootstrapVariable('SEED_ADMIN_PASSWORD');
+
+if (ADMIN_PASSWORD.length < 12) {
+  throw new Error('SEED_ADMIN_EMAIL y SEED_ADMIN_PASSWORD (mínimo 12 caracteres) son obligatorios');
+}
+if (process.env.NODE_ENV === 'production' && process.env.ALLOW_PRODUCTION_BOOTSTRAP !== 'yes') {
+  throw new Error('En producción define ALLOW_PRODUCTION_BOOTSTRAP=yes solo para el bootstrap único');
+}
 
 async function seed(): Promise<void> {
   const organization = await queryOne<{ id: string }>(
     `INSERT INTO organizations (name, slug, timezone)
      VALUES ('Modesto Packing Operations', 'modesto-packing', 'America/Los_Angeles')
-     ON CONFLICT (slug) DO UPDATE SET timezone = EXCLUDED.timezone
+     ON CONFLICT (slug) DO NOTHING
      RETURNING id`
   );
   const organizationId = organization!.id;
@@ -25,7 +38,7 @@ async function seed(): Promise<void> {
     await query(
       `INSERT INTO plants (organization_id, code, name)
        VALUES ($1, $2, $3)
-       ON CONFLICT (organization_id, code) DO UPDATE SET name = EXCLUDED.name`,
+       ON CONFLICT (organization_id, code) DO NOTHING`,
       [organizationId, code, name]
     );
   }
@@ -51,7 +64,7 @@ async function seed(): Promise<void> {
     await query(
       `INSERT INTO users (email, password_hash, role, name, organization_id)
        VALUES (lower($1), $2, 'admin', 'Administrador', $3)`,
-      [ADMIN_EMAIL, await bcrypt.hash(ADMIN_PASSWORD, 10), organizationId]
+      [ADMIN_EMAIL, await bcrypt.hash(ADMIN_PASSWORD, 12), organizationId]
     );
     console.log(`Admin creado: ${ADMIN_EMAIL} (cambiar contraseña en producción)`);
   }

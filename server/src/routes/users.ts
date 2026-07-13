@@ -41,7 +41,7 @@ usersRouter.get('/', async (req, res) => {
 
 const createSchema = z.object({
   email: z.string().email(),
-  password: z.string().min(8, 'Mínimo 8 caracteres'),
+  password: z.string().min(12, 'Mínimo 12 caracteres'),
   role: customerRole,
   name: z.string().trim().min(1),
   plant_ids: z.array(z.string().uuid()).default([]),
@@ -90,7 +90,7 @@ usersRouter.post('/', async (req, res) => {
       `INSERT INTO users (email, password_hash, role, name, organization_id)
        VALUES (lower($1), $2, $3, $4, $5)
        RETURNING id, email, role, name, organization_id, active, created_at`,
-      [body.email, await bcrypt.hash(body.password, 10), body.role, body.name, organizationId]
+      [body.email, await bcrypt.hash(body.password, 12), body.role, body.name, organizationId]
     );
     const user = inserted.rows[0]!;
     for (const plantId of body.plant_ids) {
@@ -120,7 +120,7 @@ const patchSchema = z
     name: z.string().trim().min(1),
     role: customerRole,
     active: z.boolean(),
-    password: z.string().min(8),
+    password: z.string().min(12),
     plant_ids: z.array(z.string().uuid()),
   })
   .partial();
@@ -154,9 +154,11 @@ usersRouter.patch('/:id', async (req, res) => {
     sets.push(`${column} = $${params.length}`);
   }
   if (body.password !== undefined) {
-    params.push(await bcrypt.hash(body.password, 10));
+    params.push(await bcrypt.hash(body.password, 12));
     sets.push(`password_hash = $${params.length}`);
   }
+  const securityChanged = body.password !== undefined || body.role !== undefined || body.active !== undefined;
+  if (securityChanged) sets.push('session_version = session_version + 1');
   if (!sets.length && body.plant_ids === undefined) throw badRequest('Nada que actualizar');
 
   const row = await withTransaction(async (client) => {
@@ -178,8 +180,13 @@ usersRouter.patch('/:id', async (req, res) => {
         [organizationId, existing.id, plantId]
       );
     }
-    if (body.active === false) {
-      await client.query(`UPDATE refresh_tokens SET revoked = true WHERE user_id = $1`, [existing.id]);
+    if (securityChanged) {
+      await client.query(
+        `UPDATE refresh_tokens
+         SET revoked = true, revoked_reason = COALESCE(revoked_reason, 'admin_security_change')
+         WHERE user_id = $1 AND NOT revoked`,
+        [existing.id],
+      );
     }
     await recordAudit(
       {

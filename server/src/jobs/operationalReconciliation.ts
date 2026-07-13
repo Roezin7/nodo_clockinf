@@ -82,7 +82,7 @@ export async function reconcileAllOperationalExceptions(now = new Date()): Promi
   return changed;
 }
 
-export function scheduleOperationalReconciliation(): void {
+export function scheduleOperationalReconciliation(): () => void {
   let running = false;
   const run = (): void => {
     if (running) return;
@@ -96,6 +96,10 @@ export function scheduleOperationalReconciliation(): void {
         running = false;
       });
   };
-  setTimeout(run, 15_000);
-  setInterval(run, 60_000);
+  const timeout = setTimeout(run, 15_000);
+  const interval = setInterval(run, 60_000);
+  return () => {
+    clearTimeout(timeout);
+    clearInterval(interval);
+  };
 }

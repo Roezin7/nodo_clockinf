@@ -33,10 +33,11 @@ COPY server/migrations server/migrations
 
 # app.ts resuelve ../client/dist relativo al cwd: debe ser /app/server
 WORKDIR /app/server
+USER node
 
 EXPOSE 3001
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s \
   CMD wget -qO- "http://127.0.0.1:${PORT:-3001}/api/health" || exit 1
 
-# El seed es idempotente: crea admin/áreas/turnos/settings solo si faltan
-CMD ["sh", "-c", "npm run migrate && node dist/seed.js && npm start"]
+# El bootstrap es explícito y de una sola vez; un arranque nunca crea cuentas.
+CMD ["sh", "-c", "npm run migrate && node dist/scripts/encryptPii.js && exec node dist/index.js"]

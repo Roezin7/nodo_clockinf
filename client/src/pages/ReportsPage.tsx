@@ -2,7 +2,7 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'rea
 import { Link } from 'react-router-dom';
 import { ChevronLeft, ChevronRight, FileSpreadsheet } from 'lucide-react';
 import type { WeekReport } from '@clockai/shared';
-import { api, ApiError, getStoredAuth } from '../api';
+import { api, ApiError, authenticatedFetch } from '../api';
 import { useAuth } from '../hooks/useAuth';
 import { fmtDateTime, fmtTime, todayLocal, useAppTimezone } from '../time';
 import { PageHeader } from '../components/layout/PageHeader';
@@ -508,11 +508,10 @@ export default function ReportsPage() {
 
   async function download(format: 'xlsx' | 'csv', sheet: 'summary' | 'detail' = 'summary'): Promise<void> {
     if (!snapshot) return;
-    const auth = getStoredAuth();
     try {
-      const res = await fetch(reportExportPath(snapshot.week_start, snapshot.version, format, sheet), {
-        headers: { Authorization: `Bearer ${auth?.access_token ?? ''}` },
-      });
+      const res = await authenticatedFetch(
+        reportExportPath(snapshot.week_start, snapshot.version, format, sheet),
+      );
       if (!res.ok) {
         const body = (await res.json().catch(() => ({}))) as { error?: string; code?: string };
         throw new ApiError(res.status, body.error ?? 'No se pudo exportar el reporte.', body.code);

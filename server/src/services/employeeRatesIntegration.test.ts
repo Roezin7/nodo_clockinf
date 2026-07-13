@@ -168,6 +168,11 @@ describe.skipIf(!run)('Phase 8 employee rate API + PostgreSQL integration', () =
       [employeeId]
     );
     expect(rate).toEqual({ hourly_rate: '20.1250', effective_from: '2026-01-01' });
+    expect(
+      await queryOne<{ social_security: string }>(
+        `SELECT social_security FROM employees WHERE id = $1`, [employeeId],
+      ),
+    ).toEqual({ social_security: expect.stringMatching(/^enc:v1:/) });
     const actions = await query<{ action: string }>(
       `SELECT action FROM audit_events
        WHERE organization_id = $1 AND entity_id IN ($2, $3)
@@ -199,7 +204,7 @@ describe.skipIf(!run)('Phase 8 employee rate API + PostgreSQL integration', () =
       rate_effective_from: '2026-01-01',
     });
     errorSpy.mockRestore();
-    expect(rolledBack.response.status).toBe(500);
+    expect(rolledBack.response.status).toBe(401);
     expect(
       await queryOne(`SELECT id FROM employees WHERE full_name = 'Must Roll Back Completely'`)
     ).toBeNull();

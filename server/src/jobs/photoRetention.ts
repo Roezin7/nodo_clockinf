@@ -4,7 +4,7 @@
  * La checada en sí NUNCA se borra. Los enrolamientos versionados tampoco se
  * borran aquí: conservan la cadena histórica incluso si el empleado se desactiva.
  */
-import { query } from '../db.js';
+import { pool, query } from '../db.js';
 import { storage } from '../storage.js';
 import { getSettings } from '../services/settingsService.js';
 
@@ -107,6 +107,15 @@ export async function cleanupOrganizationPhotoEvidence(
 }
 
 export async function cleanupOldPunchPhotos(): Promise<number> {
+  const lock = await pool.connect();
+  const acquired = await lock.query<{ acquired: boolean }>(
+    `SELECT pg_try_advisory_lock(hashtext('clockai-photo-retention')) AS acquired`,
+  );
+  if (!acquired.rows[0]?.acquired) {
+    lock.release();
+    return 0;
+  }
+  try {
   let total = 0;
   const organizations = await query<{ id: string }>(`SELECT id FROM organizations WHERE active`);
   for (const organization of organizations) {
@@ -118,13 +127,21 @@ export async function cleanupOldPunchPhotos(): Promise<number> {
   }
   if (total > 0) console.log(`retention: ${total} evidencias fotográficas purgadas`);
   return total;
+  } finally {
+    await lock.query(`SELECT pg_advisory_unlock(hashtext('clockai-photo-retention'))`);
+    lock.release();
+  }
 }
 
 /** Corre al arrancar y luego cada 12 horas. */
-export function schedulePhotoRetention(): void {
+export function schedulePhotoRetention(): () => void {
   const run = (): void => {
     void cleanupOldPunchPhotos().catch((err) => console.error('retention job:', err));
   };
-  setTimeout(run, 30_000); // al arrancar, con margen para que todo suba
-  setInterval(run, 12 * 3600 * 1000);
+  const timeout = setTimeout(run, 30_000); // al arrancar, con margen para que todo suba
+  const interval = setInterval(run, 12 * 3600 * 1000);
+  return () => {
+    clearTimeout(timeout);
+    clearInterval(interval);
+  };
 }

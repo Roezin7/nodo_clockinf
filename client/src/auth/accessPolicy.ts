@@ -8,6 +8,7 @@ export const PROTECTED_ROUTE_ROLES = {
   '/identity-reviews': ['admin', 'foreman'],
   '/reports': ['admin', 'accountant'],
   '/settings': ['admin'],
+  '/profile': ['admin', 'foreman', 'accountant'],
   '/styleguide': ['admin'],
 } as const satisfies Record<string, readonly UserRole[]>;
 

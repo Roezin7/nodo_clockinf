@@ -19,5 +19,8 @@
   },
   "engines": {
     "node": ">=20"
+  },
+  "dependencies": {
+    "helmet": "^8.3.0"
   }
 }
