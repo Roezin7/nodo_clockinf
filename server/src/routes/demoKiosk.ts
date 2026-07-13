@@ -2,7 +2,6 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { query, queryOne } from '../db.js';
 import { notFound } from '../errors.js';
-import { requireDemoKiosk } from '../middleware/auth.js';
 import { config } from '../config.js';
 
 export const demoKioskRouter = Router();
@@ -23,8 +22,6 @@ async function demoOrganization(): Promise<DemoOrganization> {
   if (!organization) throw notFound('La organización del kiosco de pruebas no está disponible');
   return organization;
 }
-
-demoKioskRouter.use(requireDemoKiosk);
 
 demoKioskRouter.get('/recent', async (_req, res) => {
   const organization = await demoOrganization();

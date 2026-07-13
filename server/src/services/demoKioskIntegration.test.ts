@@ -6,7 +6,7 @@ import { createApp } from '../app.js';
 import { pool, queryOne } from '../db.js';
 import { config } from '../config.js';
 
-const run = process.env.RUN_DB_INTEGRATION === '1' && Boolean(config.demoKioskToken) && Boolean(config.demoKioskOrganizationSlug);
+const run = process.env.RUN_DB_INTEGRATION === '1' && Boolean(config.demoKioskOrganizationSlug);
 let server: Server;
 let baseUrl = '';
 let employeeNumber = 0;
@@ -44,11 +44,12 @@ describe.skipIf(!run)('demo kiosk isolation', () => {
   });
 
   it('records a real employee only in the isolated demonstration ledger', async () => {
-    const denied = await fetch(`${baseUrl}/api/demo-kiosk/recent`);
-    expect(denied.status).toBe(401);
+    const initial = await fetch(`${baseUrl}/api/demo-kiosk/recent`);
+    expect(initial.status).toBe(200);
+    expect((await initial.json() as { punches: unknown[] }).punches).toEqual([]);
     const created = await fetch(`${baseUrl}/api/demo-kiosk/punches`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-demo-kiosk-token': config.demoKioskToken },
+      headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ employee_number: employeeNumber, punch_type: 'shift_in' }),
     });
     expect(created.status).toBe(201);
@@ -62,7 +63,7 @@ describe.skipIf(!run)('demo kiosk isolation', () => {
       [employeeNumber],
     );
     expect(operational!.count).toBe('0');
-    const recent = await fetch(`${baseUrl}/api/demo-kiosk/recent`, { headers: { 'x-demo-kiosk-token': config.demoKioskToken } });
+    const recent = await fetch(`${baseUrl}/api/demo-kiosk/recent`);
     expect(recent.status).toBe(200);
     expect((await recent.json() as { punches: unknown[] }).punches).toHaveLength(1);
   });

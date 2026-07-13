@@ -27,8 +27,7 @@ Una sola app (Dockerfile en la raíz: API + cliente estático) + una Postgres lo
 | `FACE_PROVIDER` | `review_only` para el arranque seguro; `aws_rekognition` sólo habilita comparación 1:1 y no equivale a prueba de vida |
 | `VAPID_SUBJECT` / `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` | (opcional) las tres salidas de una identidad generada con `npx web-push generate-vapid-keys`; dejar las tres ausentes desactiva sólo Web Push |
 | `CORS_ORIGINS` | vacío en producción mismo-origen; en desarrollo, p. ej. `http://localhost:5173` |
-| `DEMO_KIOSK_TOKEN` | opcional, `openssl rand -hex 32`; protege el kiosco de pruebas con empleados reales sin afectar horas pagables |
-| `DEMO_KIOSK_ORGANIZATION_SLUG` | slug de la organización que se demostrará, p. ej. `modesto-packing` |
+| `DEMO_KIOSK_ORGANIZATION_SLUG` | slug de la organización que se demostrará públicamente, p. ej. `modesto-packing` |
 
 ### Fotos
 
@@ -44,13 +43,11 @@ los teléfonos reales del admin y los foremen.
 
 ### Kiosco de pruebas
 
-Con ambas variables `DEMO_KIOSK_*` configuradas, comparte sólo con el dueño un
-enlace de este formato: `https://tu-dominio/demo/kiosk#demo=<DEMO_KIOSK_TOKEN>`.
-El fragmento no se envía al servidor ni queda en logs; el navegador lo convierte
-en header. El kiosco usa números de empleados activos, pero guarda sus eventos
-en una tabla aislada: no hay horas pagables, reportes, dashboard ni fotos
-biométricas productivas. Para revocar el enlace, cambia `DEMO_KIOSK_TOKEN` y
-redeploya.
+Con `DEMO_KIOSK_ORGANIZATION_SLUG` configurada, el kiosco de demostración se
+abre directamente en `https://tu-dominio/demo/kiosk`, sin token ni inicio de
+sesión. Usa números de empleados activos y muestra el historial de pruebas
+públicamente; sus eventos viven en una tabla aislada: no hay horas pagables,
+reportes, dashboard ni fotos biométricas productivas.
 
 ## 3. Primer deploy
 

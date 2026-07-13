@@ -112,28 +112,6 @@ export function requireOrganization(req: Request): string {
 }
 
 /**
- * The owner demo deliberately has no user login, but it must never be an
- * unauthenticated employee-directory endpoint. Its token is supplied only in
- * a URL fragment by the client and sent as a header, never as a query string.
- */
-export function requireDemoKiosk(req: Request, _res: Response, next: NextFunction): void {
-  const expected = config.demoKioskToken;
-  const provided = req.headers['x-demo-kiosk-token'];
-  if (!expected || !config.demoKioskOrganizationSlug || typeof provided !== 'string') {
-    throw unauthorized('Kiosco de pruebas no configurado o enlace inválido');
-  }
-  const actualBytes = Buffer.from(provided);
-  const expectedBytes = Buffer.from(expected);
-  if (
-    actualBytes.length !== expectedBytes.length ||
-    !crypto.timingSafeEqual(actualBytes, expectedBytes)
-  ) {
-    throw unauthorized('Kiosco de pruebas no configurado o enlace inválido');
-  }
-  next();
-}
-
-/**
  * Device-scoped kiosk authentication. Enrollment tokens are only returned once
  * and only their SHA-256 digest is persisted. A revoked device (or one whose
  * tenant/plant was disabled) immediately loses access.

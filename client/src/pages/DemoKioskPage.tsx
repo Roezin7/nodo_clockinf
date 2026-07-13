@@ -3,7 +3,6 @@ import { Camera, Check, ChevronLeft, Clock3, RotateCcw, ShieldAlert, Wifi } from
 import type { PunchType } from '@clockai/shared';
 import { failedDemoIdentityOutcome } from '../demo/kioskDemo';
 
-const DEMO_TOKEN_KEY = 'clockai.demo-kiosk.token';
 const ACTIONS: Array<{ type: PunchType; label: string; tone: string }> = [
   { type: 'shift_in', label: 'Entrada', tone: 'border-success/60 bg-success/15' },
   { type: 'meal_out', label: 'Salida a lunch', tone: 'border-warning/60 bg-warning/15' },
@@ -15,23 +14,11 @@ type Step = 'number' | 'action' | 'identity' | 'complete';
 type Result = 'verified' | 'review';
 interface DemoPunch { id: string; employee_number: number; employee_name: string; punch_type: PunchType; punched_at: string }
 
-function readDemoToken(): string | null {
-  const fragment = new URLSearchParams(window.location.hash.slice(1));
-  const fromLink = fragment.get('demo');
-  if (fromLink) {
-    sessionStorage.setItem(DEMO_TOKEN_KEY, fromLink);
-    window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}`);
-    return fromLink;
-  }
-  return sessionStorage.getItem(DEMO_TOKEN_KEY);
-}
-
 function displayTime(iso: string, timezone: string): string {
   return new Intl.DateTimeFormat('es-US', { hour: 'numeric', minute: '2-digit', timeZone: timezone }).format(new Date(iso));
 }
 
 export default function DemoKioskPage() {
-  const [token] = useState(readDemoToken);
   const [step, setStep] = useState<Step>('number');
   const [employeeNumber, setEmployeeNumber] = useState('');
   const [action, setAction] = useState<(typeof ACTIONS)[number] | null>(null);
@@ -55,9 +42,8 @@ export default function DemoKioskPage() {
   }
 
   const loadRecent = useCallback(async () => {
-    if (!token) return;
     try {
-      const response = await fetch('/api/demo-kiosk/recent', { headers: { 'x-demo-kiosk-token': token }, cache: 'no-store' });
+      const response = await fetch('/api/demo-kiosk/recent', { cache: 'no-store' });
       const data = await response.json() as { punches?: DemoPunch[]; organization_name?: string; timezone?: string; error?: string };
       if (!response.ok) throw new Error(data.error ?? 'No fue posible cargar las pruebas');
       setRecent(data.punches ?? []);
@@ -67,7 +53,7 @@ export default function DemoKioskPage() {
     } catch (error) {
       setServerError(error instanceof Error ? error.message : 'No fue posible conectar el kiosco de pruebas');
     }
-  }, [token]);
+  }, []);
 
   useEffect(() => { void loadRecent(); }, [loadRecent]);
   useEffect(() => () => stopCamera(), []);
@@ -112,7 +98,7 @@ export default function DemoKioskPage() {
   }
 
   async function finish(nextResult: Result): Promise<void> {
-    if (!token || !action || saving) return;
+    if (!action || saving) return;
     captureLocalPhoto();
     stopCamera();
     setSaving(true);
@@ -120,7 +106,7 @@ export default function DemoKioskPage() {
     try {
       const response = await fetch('/api/demo-kiosk/punches', {
         method: 'POST',
-        headers: { 'content-type': 'application/json', 'x-demo-kiosk-token': token },
+        headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ employee_number: Number(employeeNumber), punch_type: action.type }),
       });
       const data = await response.json() as { punch?: DemoPunch; timezone?: string; error?: string };
@@ -148,10 +134,6 @@ export default function DemoKioskPage() {
     stopCamera();
     setPhotoUrl((previous) => { if (previous) URL.revokeObjectURL(previous); return null; });
     setEmployeeNumber(''); setAction(null); setFailedAttempts(0); setCameraMessage(''); setServerError(''); setResultPunch(null); setStep('number');
-  }
-
-  if (!token) {
-    return <DemoUnavailable message="Este kiosco de pruebas requiere el enlace secreto del administrador. Abre el enlace completo que termina en #demo=…" />;
   }
 
   return (
@@ -192,13 +174,9 @@ export default function DemoKioskPage() {
             <button onClick={reset} className="mt-7 inline-flex min-h-14 items-center gap-2 rounded-control bg-accent px-5 text-16 font-bold text-white"><RotateCcw size={19} /> Hacer otra prueba</button>
           </>}
         </section>
-        <aside className="w-full rounded-card border border-kiosk-line bg-kiosk-raised p-5 text-left lg:w-80"><h2 className="font-display text-18 font-bold text-kiosk-ink">Últimas checadas de prueba</h2><p className="mt-1 text-13 text-kiosk-ink-dim">Visibles sólo desde el enlace secreto.</p><div className="mt-4 max-h-[420px] space-y-3 overflow-auto">{recent.length === 0 ? <p className="text-14 text-kiosk-ink-dim">Aún no hay pruebas registradas.</p> : recent.map((punch) => <div key={punch.id} className="rounded-control border border-kiosk-line p-3"><p className="text-14 font-bold text-kiosk-ink">{punch.employee_name}</p><p className="mt-1 text-13 text-kiosk-ink-dim">#{punch.employee_number} · {ACTIONS.find((item) => item.type === punch.punch_type)?.label ?? punch.punch_type}</p><p className="mt-1 text-12 text-kiosk-ink-dim">{displayTime(punch.punched_at, timezone)}</p></div>)}</div><button onClick={() => void loadRecent()} className="mt-4 text-13 font-bold text-accent">Actualizar lista</button></aside>
+        <aside className="w-full rounded-card border border-kiosk-line bg-kiosk-raised p-5 text-left lg:w-80"><h2 className="font-display text-18 font-bold text-kiosk-ink">Últimas checadas de prueba</h2><p className="mt-1 text-13 text-kiosk-ink-dim">Historial de esta demostración pública.</p><div className="mt-4 max-h-[420px] space-y-3 overflow-auto">{recent.length === 0 ? <p className="text-14 text-kiosk-ink-dim">Aún no hay pruebas registradas.</p> : recent.map((punch) => <div key={punch.id} className="rounded-control border border-kiosk-line p-3"><p className="text-14 font-bold text-kiosk-ink">{punch.employee_name}</p><p className="mt-1 text-13 text-kiosk-ink-dim">#{punch.employee_number} · {ACTIONS.find((item) => item.type === punch.punch_type)?.label ?? punch.punch_type}</p><p className="mt-1 text-12 text-kiosk-ink-dim">{displayTime(punch.punched_at, timezone)}</p></div>)}</div><button onClick={() => void loadRecent()} className="mt-4 text-13 font-bold text-accent">Actualizar lista</button></aside>
       </main>
       <footer className="flex items-center justify-center gap-2 border-t border-kiosk-line px-5 py-4 text-13 text-kiosk-ink-dim"><Wifi size={15} /> Las checadas de prueba viven en una tabla aislada y no afectan horas pagables.</footer>
     </div>
   );
-}
-
-function DemoUnavailable({ message }: { message: string }) {
-  return <div className="flex min-h-screen items-center justify-center bg-kiosk-bg p-6 text-center text-kiosk-ink"><div className="max-w-lg rounded-card border border-kiosk-line bg-kiosk-raised p-8"><ShieldAlert size={44} className="mx-auto text-warning" /><h1 className="mt-5 text-24 font-bold">Kiosco de pruebas protegido</h1><p className="mt-3 text-16 text-kiosk-ink-dim">{message}</p></div></div>;
 }

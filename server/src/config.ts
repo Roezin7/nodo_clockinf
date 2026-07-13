@@ -66,9 +66,8 @@ export const config = {
   jwtRefreshSecret,
   piiEncryptionKey,
   corsOrigins: commaList(process.env.CORS_ORIGINS),
-  // A separately shared, revocable link for the owner-facing kiosk demo.
-  // Empty values leave the public demo route disabled.
-  demoKioskToken: process.env.DEMO_KIOSK_TOKEN ?? '',
+  // The public, owner-facing demo is isolated from operational attendance.
+  // Its organization is intentionally explicit to avoid exposing every tenant.
   demoKioskOrganizationSlug: process.env.DEMO_KIOSK_ORGANIZATION_SLUG ?? '',
   accessTokenTtl: process.env.ACCESS_TOKEN_TTL ?? '15m',
   refreshTokenTtlDays: parseInt(process.env.REFRESH_TOKEN_TTL_DAYS ?? '30', 10),
