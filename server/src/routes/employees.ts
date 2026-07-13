@@ -3,7 +3,7 @@ import bcrypt from 'bcryptjs';
 import crypto from 'node:crypto';
 import multer from 'multer';
 import { z } from 'zod';
-import { query, queryOne } from '../db.js';
+import { query, queryOne, withTransaction } from '../db.js';
 import { badRequest, notFound } from '../errors.js';
 import {
   requireAdmin,
@@ -13,11 +13,16 @@ import {
 } from '../middleware/auth.js';
 import { recordAudit } from '../services/auditService.js';
 import { storage } from '../storage.js';
+import {
+  FACE_IMAGE_MAX_BYTES,
+  FACE_IMAGE_MIME_TYPES,
+  supportedFaceImage,
+} from '../services/identityService.js';
 
-const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 8 * 1024 * 1024 } });
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: FACE_IMAGE_MAX_BYTES } });
 
 export const employeesRouter = Router();
-employeesRouter.use(requireAuth, requireRole('admin', 'foreman', 'accountant'));
+employeesRouter.use(requireAuth, requireRole('admin', 'foreman'));
 
 export interface EmployeeRow {
   id: string;
@@ -28,6 +33,7 @@ export interface EmployeeRow {
   phone: string | null;
   pin_hash: string;
   enrollment_photo_key: string | null;
+  current_biometric_enrollment_id: string | null;
   default_shift_id: string | null;
   active: boolean;
   hired_at: string | null;
@@ -38,7 +44,8 @@ export interface EmployeeRow {
 const SAFE_COLS = `id, organization_id, employee_number, full_name, default_shift_id,
   active, hired_at, deactivated_at, created_at`;
 const ADMIN_COLS = `id, organization_id, employee_number, full_name, social_security, phone,
-  enrollment_photo_key, default_shift_id, active, hired_at, deactivated_at, created_at`;
+  enrollment_photo_key, current_biometric_enrollment_id, default_shift_id, active, hired_at,
+  deactivated_at, created_at`;
 
 /** PIN aleatorio de 4 dígitos, imprimible para la credencial. */
 export function generatePin(): string {
@@ -84,29 +91,105 @@ employeesRouter.get('/:id', async (req, res) => {
   });
 });
 
-/** Foto de enrolamiento. Se conserva solo durante la relación activa. */
+/** Nueva versión inmutable de enrolamiento; las anteriores conservan auditoría. */
 employeesRouter.post('/:id/photo', requireAdmin, upload.single('photo'), async (req, res) => {
   if (!req.file) throw badRequest('Falta archivo photo');
+  const contentType = req.file.mimetype.toLowerCase();
+  if (!(FACE_IMAGE_MIME_TYPES as readonly string[]).includes(contentType)) {
+    throw badRequest('La foto debe ser JPEG, PNG o WebP');
+  }
+  if (!supportedFaceImage(req.file.buffer, contentType)) {
+    throw badRequest('El contenido no corresponde al tipo de imagen declarado');
+  }
   const organizationId = requireOrganization(req);
-  const emp = await queryOne<{ id: string }>(
-    `SELECT id FROM employees WHERE id = $1 AND organization_id = $2`,
-    [req.params.id, organizationId]
-  );
-  if (!emp) throw notFound('Empleado no encontrado');
-  const key = `${organizationId}/enrollment/${emp.id}.jpg`;
-  await storage.put(key, req.file.buffer, req.file.mimetype || 'image/jpeg');
-  await query(
-    `UPDATE employees SET enrollment_photo_key = $1 WHERE id = $2 AND organization_id = $3`,
-    [key, emp.id, organizationId]
-  );
-  await recordAudit({
-    organizationId,
-    actorUserId: req.user!.id,
-    action: 'employee.enrollment_photo_updated',
-    entityType: 'employee',
-    entityId: emp.id,
+  const hash = crypto.createHash('sha256').update(req.file.buffer).digest('hex');
+  const extension = contentType === 'image/png' ? 'png' : contentType === 'image/webp' ? 'webp' : 'jpg';
+  let uploadedKey: string | null = null;
+  let enrollment: Record<string, unknown>;
+  try {
+    enrollment = await withTransaction(async (client) => {
+      const employee = await client.query<{ id: string }>(
+        `SELECT id FROM employees WHERE id = $1 AND organization_id = $2 FOR UPDATE`,
+        [req.params.id, organizationId]
+      );
+      if (!employee.rows[0]) throw notFound('Empleado no encontrado');
+      const versionResult = await client.query<{ version: number }>(
+        `SELECT COALESCE(max(version), 0)::integer + 1 AS version
+         FROM biometric_enrollments WHERE employee_id = $1 AND organization_id = $2`,
+        [employee.rows[0].id, organizationId]
+      );
+      const version = versionResult.rows[0]!.version;
+      const id = crypto.randomUUID();
+      const key = `${organizationId}/enrollment/${employee.rows[0].id}/v${version}-${hash}.${extension}`;
+      await storage.put(key, req.file!.buffer, contentType);
+      uploadedKey = key;
+      const inserted = await client.query(
+        `INSERT INTO biometric_enrollments
+           (id, organization_id, employee_id, version, photo_key, photo_sha256,
+            content_type, byte_size, provider, integrity_status, status, created_by)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'review_only', 'verified', 'ready', $9)
+         RETURNING id, version, status, provider, integrity_status, created_at`,
+        [
+          id,
+          organizationId,
+          employee.rows[0].id,
+          version,
+          key,
+          hash,
+          contentType,
+          req.file!.buffer.length,
+          req.user!.id,
+        ]
+      );
+      await client.query(
+        `UPDATE employees
+         SET enrollment_photo_key = $1, current_biometric_enrollment_id = $2
+         WHERE id = $3 AND organization_id = $4`,
+        [key, id, employee.rows[0].id, organizationId]
+      );
+      await recordAudit(
+        {
+          organizationId,
+          actorUserId: req.user!.id,
+          action: 'employee.biometric_enrollment_version_created',
+          entityType: 'employee',
+          entityId: employee.rows[0].id,
+          metadata: { enrollment_id: id, version, photo_sha256: hash },
+        },
+        client
+      );
+      return { ...(inserted.rows[0] as Record<string, unknown>), photo_key: key };
+    });
+  } catch (error) {
+    if (uploadedKey) {
+      let provenUnreferenced = false;
+      try {
+        provenUnreferenced = !(await queryOne(
+          `SELECT id FROM biometric_enrollments
+           WHERE organization_id = $1 AND photo_key = $2 LIMIT 1`,
+          [organizationId, uploadedKey]
+        ));
+      } catch {
+        // COMMIT may have succeeded before a lost connection. Unknown DB state
+        // means preserve bytes; an orphan leak is safer than broken evidence.
+      }
+      if (provenUnreferenced) {
+        try {
+          await storage.remove(uploadedKey);
+        } catch {
+          // Content-addressed/versioned orphan can be reconciled later.
+        }
+      }
+    }
+    throw error;
+  }
+  // Signing a view URL happens after commit and must never trigger deletion of
+  // the now-referenced immutable object if the signing service has an outage.
+  res.status(201).json({
+    ok: true,
+    biometric_enrollment: enrollment,
+    photo_url: await storage.viewUrl(uploadedKey!),
   });
-  res.json({ ok: true, photo_key: key, photo_url: await storage.viewUrl(key) });
 });
 
 const createSchema = z.object({
@@ -190,22 +273,13 @@ employeesRouter.patch('/:id', requireAdmin, async (req, res) => {
 employeesRouter.post('/:id/deactivate', requireAdmin, async (req, res) => {
   const organizationId = requireOrganization(req);
   const row = await queryOne<{ id: string; enrollment_photo_key: string | null }>(
-    `UPDATE employees SET active = false, deactivated_at = current_date
+    `UPDATE employees
+     SET active = false, deactivated_at = current_date,
+         enrollment_photo_key = NULL, current_biometric_enrollment_id = NULL
      WHERE id = $1 AND organization_id = $2 RETURNING ${ADMIN_COLS}`,
     [req.params.id, organizationId]
   );
   if (!row) throw notFound('Empleado no encontrado');
-  if (row.enrollment_photo_key) {
-    try {
-      await storage.remove(row.enrollment_photo_key);
-      await query(
-        `UPDATE employees SET enrollment_photo_key = NULL WHERE id = $1 AND organization_id = $2`,
-        [req.params.id, organizationId]
-      );
-    } catch (err) {
-      console.error('No se pudo borrar la foto de enrolamiento:', err);
-    }
-  }
   await recordAudit({
     organizationId,
     actorUserId: req.user!.id,
@@ -213,7 +287,7 @@ employeesRouter.post('/:id/deactivate', requireAdmin, async (req, res) => {
     entityType: 'employee',
     entityId: row.id,
   });
-  res.json({ ...row, enrollment_photo_key: null });
+  res.json(row);
 });
 
 employeesRouter.post('/:id/reactivate', requireAdmin, async (req, res) => {

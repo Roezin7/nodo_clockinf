@@ -10,6 +10,9 @@ import {
   queueStats,
   recoverProvisionalEvents,
   getClientInstallationId,
+  prepareIdentityAttempt,
+  setIdentityOutcome,
+  setIdentitySession,
 } from './db';
 import { flushKioskQueue, sendHeartbeat } from './sync';
 import { KIOSK_TIMEOUT_MS } from './fetch';
@@ -117,6 +120,27 @@ describe('cola cifrada del kiosco', () => {
       photo: new Blob([photoBytes], { type: 'image/jpeg' }),
     });
     expect(retry.payload.clientClockSkewSeconds).toBe(37);
+    const identitySessionId = '33333333-3333-4333-8333-333333333333';
+    const identityAttemptId = '44444444-4444-4444-8444-444444444444';
+    await setIdentitySession(token, retry.id, identitySessionId);
+    await prepareIdentityAttempt(token, retry.id, {
+      attemptId: identityAttemptId,
+      capturedAt: '2026-07-14T22:00:01.000Z',
+      photo: new Blob([new Uint8Array([9, 8, 7])], { type: 'image/jpeg' }),
+      evidenceStatus: 'captured',
+    });
+    await setIdentityOutcome(token, retry.id, 'identity_review', 'provider_unavailable');
+    const identityPersisted = (await listQueuedEvents(token))[0]!;
+    expect(identityPersisted.payload).toMatchObject({
+      identitySessionId,
+      identityAttemptId,
+      identityAttemptCapturedAt: '2026-07-14T22:00:01.000Z',
+      identityOutcome: 'identity_review',
+      identityBypassReason: 'provider_unavailable',
+    });
+    expect(new Uint8Array(await (await photoForEvent(token, retry.id))!.arrayBuffer())).toEqual(
+      new Uint8Array([9, 8, 7])
+    );
 
     vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ clock_skew_seconds: -12 }), {
       status: 200,
@@ -130,15 +154,25 @@ describe('cola cifrada del kiosco', () => {
     let photoCalls = 0;
     let syncedInstallationId: string | null = null;
     let syncedClockSkew: number | null = null;
+    let syncedIdentitySessionId: string | null = null;
+    let syncedIdentityBypassReason: string | null = null;
+    const uploadedEventIds: string[] = [];
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url === '/api/punches/sync') {
         syncCalls += 1;
         const request = JSON.parse(String(init?.body)) as {
-          events: { client_installation_id: string; client_clock_skew_seconds: number | null }[];
+          events: {
+            client_installation_id: string;
+            client_clock_skew_seconds: number | null;
+            identity_session_id: string | null;
+            identity_bypass_reason: string | null;
+          }[];
         };
         syncedInstallationId = request.events[0]?.client_installation_id ?? null;
         syncedClockSkew = request.events[0]?.client_clock_skew_seconds ?? null;
+        syncedIdentitySessionId = request.events[0]?.identity_session_id ?? null;
+        syncedIdentityBypassReason = request.events[0]?.identity_bypass_reason ?? null;
         return new Response(JSON.stringify({
           results: [{
             client_event_id: retry.id,
@@ -148,6 +182,8 @@ describe('cola cifrada del kiosco', () => {
         }), { status: 200, headers: { 'Content-Type': 'application/json' } });
       }
       photoCalls += 1;
+      expect(init?.body).toBeInstanceOf(FormData);
+      uploadedEventIds.push(String((init?.body as FormData).get('client_event_id')));
       return new Response(null, { status: photoCalls === 1 ? 503 : 204 });
     }));
 
@@ -156,8 +192,11 @@ describe('cola cifrada del kiosco', () => {
     expect((await flushKioskQueue(token)).stats.pending).toBe(0);
     expect(syncCalls).toBe(1); // no recrea la checada al reintentar sólo la foto
     expect(photoCalls).toBe(2);
+    expect(uploadedEventIds).toEqual([retry.id, retry.id]);
     expect(syncedInstallationId).toBe(retry.payload.clientInstallationId);
     expect(syncedClockSkew).toBe(37);
+    expect(syncedIdentitySessionId).toBe(identitySessionId);
+    expect(syncedIdentityBypassReason).toBe('provider_unavailable');
 
     const installationBeforeDelete = await getClientInstallationId();
     expect(installationBeforeDelete).toBe(retry.payload.clientInstallationId);

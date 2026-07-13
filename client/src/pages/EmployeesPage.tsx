@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Camera, Users } from 'lucide-react';
+import { Navigate } from 'react-router-dom';
 import type { Employee, Shift } from '@clockai/shared';
 import { api, ApiError } from '../api';
 import { useAuth } from '../hooks/useAuth';
@@ -7,7 +8,13 @@ import PunchHistoryModal from '../components/PunchHistoryModal';
 import CameraCapture from '../components/CameraCapture';
 import { PageHeader } from '../components/layout/PageHeader';
 import {
+  biometricEnrollmentState,
+  canAccessEmployees,
+  canViewBiometricEnrollment,
+} from '../employees/visibility';
+import {
   Button,
+  Badge,
   EmptyState,
   Field,
   Input,
@@ -26,6 +33,11 @@ import {
 } from '../components/ui';
 
 type EmployeeWithPin = Employee & { pin?: string };
+type EmployeeIdentity = Employee & {
+  biometric_enrollment_status?: 'ready' | 'error' | null;
+  current_biometric_enrollment_id?: string | null;
+  biometric_enrollment?: { id: string; version: number; status: 'ready' | 'error'; provider: string } | null;
+};
 
 interface FormState {
   full_name: string;
@@ -42,7 +54,8 @@ export default function EmployeesPage() {
   const user = useAuth();
   const toast = useToast();
   const isAdmin = user?.role === 'admin';
-  const [employees, setEmployees] = useState<Employee[] | null>(null);
+  const showEnrollment = user ? canViewBiometricEnrollment(user.role) : false;
+  const [employees, setEmployees] = useState<EmployeeIdentity[] | null>(null);
   const [shifts, setShifts] = useState<Shift[]>([]);
   const [search, setSearch] = useState('');
   const [showInactive, setShowInactive] = useState(false);
@@ -69,7 +82,7 @@ export default function EmployeesPage() {
     const params = new URLSearchParams();
     if (!showInactive) params.set('active', 'true');
     if (search) params.set('search', search);
-    setEmployees(await api<Employee[]>(`/api/employees?${params}`));
+    setEmployees(await api<EmployeeIdentity[]>(`/api/employees?${params}`));
   }, [search, showInactive]);
 
   useEffect(() => {
@@ -180,6 +193,8 @@ export default function EmployeesPage() {
 
   const shiftName = (id: string | null): string => shifts.find((s) => s.id === id)?.name ?? '—';
 
+  if (user && !canAccessEmployees(user.role)) return <Navigate to="/reports" replace />;
+
   return (
     <div>
       <PageHeader
@@ -209,7 +224,7 @@ export default function EmployeesPage() {
       />
 
       {!visible ? (
-        <TableSkeleton rows={8} cols={6} />
+        <TableSkeleton rows={8} cols={showEnrollment ? 8 : 7} />
       ) : !visible.length ? (
         <div className="rounded-card border border-line bg-raised shadow-card">
           <EmptyState
@@ -232,6 +247,7 @@ export default function EmployeesPage() {
               <TH>Teléfono</TH>
               <TH num>Alta</TH>
               <TH>Estado</TH>
+              {showEnrollment && <TH>Identidad facial</TH>}
               <TH className="text-right">Acciones</TH>
             </tr>
           </THead>
@@ -246,6 +262,17 @@ export default function EmployeesPage() {
                 <TD>
                   <StatusBadge status={emp.active ? 'activo' : 'inactivo'} />
                 </TD>
+                {showEnrollment && (
+                  <TD>
+                    {biometricEnrollmentState(emp) === 'ready' ? (
+                      <Badge tone="success">Rostro enrolado</Badge>
+                    ) : biometricEnrollmentState(emp) === 'error' ? (
+                      <Badge tone="danger">Enrollment con error</Badge>
+                    ) : (
+                      <Badge tone="warning">Sin enrolar</Badge>
+                    )}
+                  </TD>
+                )}
                 <TD>
                   <div className="flex justify-end gap-1.5">
                     <Button variant="secondary" size="sm" onClick={() => setHistory(emp)}>
@@ -256,8 +283,8 @@ export default function EmployeesPage() {
                         <Button variant="secondary" size="sm" onClick={() => openEdit(emp)}>
                           Editar
                         </Button>
-                        <Button variant="secondary" size="sm" title="Generar PIN nuevo" onClick={() => void resetPin(emp)}>
-                          PIN
+                        <Button variant="secondary" size="sm" title="Regenerar PIN de contingencia legacy" onClick={() => void resetPin(emp)}>
+                          PIN legacy
                         </Button>
                         <Button
                           variant="ghost"
@@ -322,7 +349,7 @@ export default function EmployeesPage() {
             </div>
             <Field
               label="Foto de enrolamiento"
-              hint={editing === 'new' ? 'Al guardar se genera un PIN que se muestra una sola vez' : undefined}
+              hint="Crea una nueva versión auditable del enrollment facial. El kiosco normal no solicita PIN."
             >
               {cameraOpen ? (
                 <CameraCapture

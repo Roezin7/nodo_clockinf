@@ -6,6 +6,7 @@ import {
   CalendarCheck,
   FileSpreadsheet,
   Settings as SettingsIcon,
+  ShieldCheck,
   LogOut,
   PanelLeftClose,
   PanelLeftOpen,
@@ -23,11 +24,14 @@ import AttendancePage from './pages/AttendancePage';
 import ReportsPage from './pages/ReportsPage';
 import SettingsPage from './pages/SettingsPage';
 import StyleguidePage from './pages/StyleguidePage';
+import IdentityReviewsPage from './pages/IdentityReviewsPage';
+import { canAccessRoute, landingRoute, type ProtectedRoute } from './auth/accessPolicy';
 
 const NAV = [
   { to: '/dashboard', label: 'Hoy', icon: LayoutDashboard, roles: ['admin', 'foreman'] },
   { to: '/employees', label: 'Empleados', icon: Users, roles: ['admin', 'foreman'] },
   { to: '/attendance', label: 'Asistencia', icon: CalendarCheck, roles: ['admin', 'foreman'] },
+  { to: '/identity-reviews', label: 'Identidad', icon: ShieldCheck, roles: ['admin', 'foreman'] },
   { to: '/reports', label: 'Reporte semanal', icon: FileSpreadsheet, roles: ['admin', 'accountant'] },
   { to: '/settings', label: 'Configuración', icon: SettingsIcon, roles: ['admin'] },
 ] as const;
@@ -139,20 +143,34 @@ function Shell({ children }: { children: React.ReactNode }) {
   );
 }
 
+function RoleHome() {
+  const user = useAuth();
+  return <Navigate to={user ? landingRoute(user.role) : '/login'} replace />;
+}
+
+function RoleGuard({ route, children }: { route: ProtectedRoute; children: React.ReactNode }) {
+  const user = useAuth();
+  if (!user) return <Navigate to="/login" replace />;
+  if (!canAccessRoute(user.role, route)) return <Navigate to={landingRoute(user.role)} replace />;
+  return children;
+}
+
 export default function App() {
   return (
     <ToastProvider>
       <Routes>
         <Route path="/login" element={<LoginPage />} />
         <Route path="/kiosk" element={<KioskPage />} />
-        <Route path="/" element={<Navigate to="/dashboard" replace />} />
-        <Route path="/dashboard" element={<Shell><DashboardPage /></Shell>} />
-        <Route path="/employees" element={<Shell><EmployeesPage /></Shell>} />
-        <Route path="/attendance" element={<Shell><AttendancePage /></Shell>} />
-        <Route path="/reports" element={<Shell><ReportsPage /></Shell>} />
-        <Route path="/settings" element={<Shell><SettingsPage /></Shell>} />
-        <Route path="/styleguide" element={<Shell><StyleguidePage /></Shell>} />
-        <Route path="*" element={<Navigate to="/" replace />} />
+        <Route path="/" element={<RoleHome />} />
+        <Route path="/dashboard" element={<RoleGuard route="/dashboard"><Shell><DashboardPage /></Shell></RoleGuard>} />
+        <Route path="/employees" element={<RoleGuard route="/employees"><Shell><EmployeesPage /></Shell></RoleGuard>} />
+        <Route path="/attendance" element={<RoleGuard route="/attendance"><Shell><AttendancePage /></Shell></RoleGuard>} />
+        <Route path="/identity-reviews" element={<RoleGuard route="/identity-reviews"><Shell><IdentityReviewsPage /></Shell></RoleGuard>} />
+        <Route path="/identity" element={<Navigate to="/identity-reviews" replace />} />
+        <Route path="/reports" element={<RoleGuard route="/reports"><Shell><ReportsPage /></Shell></RoleGuard>} />
+        <Route path="/settings" element={<RoleGuard route="/settings"><Shell><SettingsPage /></Shell></RoleGuard>} />
+        <Route path="/styleguide" element={<RoleGuard route="/styleguide"><Shell><StyleguidePage /></Shell></RoleGuard>} />
+        <Route path="*" element={<RoleHome />} />
       </Routes>
     </ToastProvider>
   );

@@ -12,10 +12,10 @@ capturing -> durable locally -> sending -> event acknowledged -> photo acknowled
                          \-> pending offline -> retry in sequence ---------/
 ```
 
-The browser must never persist the employee PIN. A connectivity failure keeps
-the event and evidence photo and creates an identity-review warning when it
-eventually syncs. Authentication rejection while online removes the provisional
-event because no punch was accepted.
+The normal kiosk flow has no PIN. A connectivity failure keeps the event and
+encrypted evidence photo and creates an identity-review warning when it
+eventually syncs. An invalid employee or permanently invalid event remains a
+visible rejected item until it is reconciled; it is never silently discarded.
 
 ## Server invariants
 
@@ -52,8 +52,8 @@ event because no punch was accepted.
 - Every kiosk network request has a bounded timeout. A stuck connection returns
   control to the employee and leaves the encrypted event queued for an
   idempotent retry.
-- A generic API rate-limit response never deletes an event. Only the explicit
-  `pin_locked` code may discard an unauthenticated provisional attempt.
+- A generic API rate-limit or authentication response never deletes a durable
+  event. The kiosk retains it for an idempotent retry or explicit reconciliation.
 
 ## Acceptance matrix
 
@@ -84,7 +84,7 @@ event because no punch was accepted.
 
 ## Operational rollout
 
-Create exactly two named devices per plant, open each one-time enrollment link
+Create exactly one named device per plant, open each one-time enrollment link
 on the assigned tablet, verify its plant label, take one online test punch and
 one forced-offline test punch, then revoke the temporary test device/token. A
 production kiosk is accepted only after reload, airplane-mode and duplicate

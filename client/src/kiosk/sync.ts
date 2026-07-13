@@ -47,6 +47,7 @@ async function uploadEvidence(token: string, event: QueuedEvent): Promise<boolea
   }
   if (!photo) return false;
   const form = new FormData();
+  form.append('client_event_id', event.id);
   form.append('photo', photo, `${event.id}.jpg`);
   const response = await kioskFetch(`/api/punches/${encodeURIComponent(punchId)}/photo`, {
     method: 'POST',
@@ -87,6 +88,8 @@ async function doFlush(token: string): Promise<FlushResult> {
               evidence_status: event.payload.evidenceStatus,
               client_installation_id: event.payload.clientInstallationId,
               client_clock_skew_seconds: event.payload.clientClockSkewSeconds,
+              identity_session_id: event.payload.identitySessionId,
+              identity_bypass_reason: event.payload.identityBypassReason,
             })),
           }),
         }, KIOSK_TIMEOUT_MS.sync);

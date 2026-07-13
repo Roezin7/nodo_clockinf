@@ -14,7 +14,7 @@ import { query } from '../db.js';
 import { accessiblePlantIds, assertPlantAccess } from '../services/tenantService.js';
 
 export const attendanceRouter = Router();
-attendanceRouter.use(requireAuth, requireRole('admin', 'foreman', 'accountant'));
+attendanceRouter.use(requireAuth, requireRole('admin', 'foreman'));
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -34,7 +34,7 @@ attendanceRouter.get('/day/:date', async (req, res) => {
 
 // Asignación de área del día (bulk)
 export const assignmentsRouter = Router();
-assignmentsRouter.use(requireAuth);
+assignmentsRouter.use(requireAuth, requireRole('admin', 'foreman'));
 
 const assignSchema = z.object({
   work_date: z.string().regex(DATE_RE),

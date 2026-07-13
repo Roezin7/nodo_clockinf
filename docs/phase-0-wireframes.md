@@ -18,18 +18,18 @@ These low-fidelity contracts define information hierarchy, not final styling.
 +--------------------------------------------------+
 ```
 
-## Kiosk — identity fallback
+## Kiosk — identity review fallback
 
 ```text
 +--------------------------------------------------+
 | We could not verify your face (3/3)                |
-| Your time will still be recorded.                  |
+| Your time was recorded and sent for review.        |
 |                                                    |
-| Enter backup PIN:  [ * * * * * * ]                 |
+| Recorded at: 05:01:04                              |
 |                                                    |
-|                   [ RECORD PUNCH ]                  |
+|                   [ FINISH ]                       |
 |                                                    |
-| Photo evidence: READY                              |
+| Photo evidence: SAVED                              |
 +--------------------------------------------------+
 ```
 
@@ -106,4 +106,3 @@ These low-fidelity contracts define information hierarchy, not final styling.
 | Approaching thresholds | Manual changes | Device / identity health    |
 +-----------------------------------------------------------------------+
 ```
-

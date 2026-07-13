@@ -22,19 +22,21 @@ Una sola app (Dockerfile en la raíz: API + cliente estático) + una Postgres lo
 | `DATABASE_URL` | URL interna de la Postgres de Coolify (paso 1), p. ej. `postgres://postgres:<password>@lx9hp7sstidgg2k40npad2hv:5432/postgres` — ⚠️ nunca commitear la contraseña real |
 | `JWT_SECRET` | `openssl rand -hex 32` |
 | `JWT_REFRESH_SECRET` | `openssl rand -hex 32` (distinto al anterior) |
-| `KIOSK_DEVICE_TOKEN` | `openssl rand -hex 32` — se configura igual en el kiosco |
-| `PLANT_TIMEZONE` | `America/Mexico_City` (la zona operativa real vive en `settings.timezone`, editable en Configuración) |
+| `PLANT_TIMEZONE` | `America/Los_Angeles` (la zona operativa real vive en cada organización/planta) |
+| `FACE_PROVIDER` | `review_only` para el arranque seguro; `aws_rekognition` sólo habilita comparación 1:1 y no equivale a prueba de vida |
 | `SEED_ADMIN_EMAIL` / `SEED_ADMIN_PASSWORD` | (opcional) credenciales del admin que crea el seed; si no, usa `admin@nodo.local / admin1234` — **cambiar** |
 
-### Fotos (elegir una)
+### Fotos
 
-- **Cloudflare R2 (recomendado en producción):** definir `S3_ENDPOINT`, `S3_BUCKET`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`, `S3_REGION=auto`.
-- **Disco local del servidor:** no definir ninguna `S3_*` y agregar en Coolify un **volumen persistente** montado en `/app/server/uploads-local` (sin volumen, las fotos se pierden en cada redeploy).
+Producción exige almacenamiento S3-compatible duradero. Para Cloudflare R2
+define `S3_ENDPOINT`, `S3_BUCKET`, `S3_ACCESS_KEY_ID`,
+`S3_SECRET_ACCESS_KEY`, `S3_REGION=auto`. El disco local sólo está permitido en
+desarrollo y pruebas.
 
 ## 3. Primer deploy
 
-1. **Deploy.** El contenedor ejecuta migraciones + seed + server en cada arranque (el seed es idempotente: crea áreas, turnos placeholder, settings y el admin solo si faltan). Verificar en logs `NODO CLOCK-IN server escuchando en :3001`.
-2. Entrar con el admin (`admin@nodo.local / admin1234` si no definiste `SEED_ADMIN_*`), **cambiar la contraseña**, ajustar horarios de turnos y zona horaria en Configuración.
+1. **Deploy.** El contenedor ejecuta migraciones + seed + server en cada arranque. Verificar en logs `NODO CLOCK-IN server escuchando en :3001`.
+2. Entrar con el admin (`admin@nodo.local / admin1234` si no definiste `SEED_ADMIN_*`), **cambiar la contraseña** y validar las tres plantas y el turno 05:00–13:30.
 
 ## Notas
 

@@ -22,6 +22,12 @@ export interface QueuedEventPayload {
   evidenceStatus: 'captured' | 'camera_unavailable';
   clientInstallationId: string;
   clientClockSkewSeconds: number | null;
+  /** Se persiste antes de enviar el attempt para sobrevivir respuestas perdidas. */
+  identitySessionId: string | null;
+  identityAttemptId: string | null;
+  identityAttemptCapturedAt: string | null;
+  identityOutcome: 'pending' | 'verified' | 'identity_review';
+  identityBypassReason: 'camera_unavailable' | 'provider_unavailable' | 'offline' | null;
 }
 
 interface StoredEvent {
@@ -181,6 +187,11 @@ async function decodePayload(token: string, record: StoredEvent): Promise<Queued
   if (!Object.prototype.hasOwnProperty.call(payload, 'clientClockSkewSeconds')) {
     payload.clientClockSkewSeconds = null;
   }
+  payload.identitySessionId ??= null;
+  payload.identityAttemptId ??= null;
+  payload.identityAttemptCapturedAt ??= null;
+  payload.identityOutcome ??= 'identity_review';
+  payload.identityBypassReason ??= null;
   return payload;
 }
 
@@ -248,9 +259,10 @@ export async function enqueuePunch(
     capturedAt: string;
     photo: Blob;
     evidenceStatus?: 'captured' | 'camera_unavailable';
+    clientEventId?: string;
   }
 ): Promise<QueuedEvent> {
-  const id = crypto.randomUUID();
+  const id = input.clientEventId ?? crypto.randomUUID();
   const { clientSequence, clientInstallationId, clientClockSkewSeconds } = await reserveClientIdentity();
   const payload: QueuedEventPayload = {
     employeeNumber: input.employeeNumber,
@@ -264,6 +276,11 @@ export async function enqueuePunch(
     evidenceStatus: input.evidenceStatus ?? 'captured',
     clientInstallationId,
     clientClockSkewSeconds,
+    identitySessionId: null,
+    identityAttemptId: null,
+    identityAttemptCapturedAt: null,
+    identityOutcome: 'pending',
+    identityBypassReason: null,
   };
   const [payloadEncrypted, photoEncrypted] = await Promise.all([
     encodePayload(token, id, payload),
@@ -288,6 +305,84 @@ export async function enqueuePunch(
   transaction.objectStore(EVENTS_STORE).add(record);
   await transactionDone(transaction);
   return { id, state: record.state, createdAt: now, attempts: 0, lastError: null, payload };
+}
+
+/** Guarda la sesión dentro del payload cifrado antes de iniciar un intento. */
+export async function setIdentitySession(
+  token: string,
+  id: string,
+  identitySessionId: string
+): Promise<void> {
+  const db = await database();
+  const read = db.transaction(EVENTS_STORE, 'readonly');
+  const record = await requestResult(
+    read.objectStore(EVENTS_STORE).get(id) as IDBRequest<StoredEvent | undefined>
+  );
+  await transactionDone(read);
+  if (!record) throw new Error('La checada local ya no existe');
+  const payload = await decodePayload(token, record);
+  payload.identitySessionId = identitySessionId;
+  const encrypted = await encodePayload(token, id, payload);
+  await updateRecord(id, (current) => {
+    current.payloadIv = encrypted.iv;
+    current.payloadCiphertext = encrypted.ciphertext;
+  });
+}
+
+/**
+ * Cambia foto final + UUID de intento en una sola escritura IndexedDB. Si la
+ * respuesta se pierde, ambos se conservan y ese attempt_id nunca se recrea.
+ */
+export async function prepareIdentityAttempt(
+  token: string,
+  id: string,
+  input: { attemptId: string; capturedAt: string; photo: Blob; evidenceStatus: 'captured' | 'camera_unavailable' }
+): Promise<void> {
+  const db = await database();
+  const read = db.transaction(EVENTS_STORE, 'readonly');
+  const record = await requestResult(
+    read.objectStore(EVENTS_STORE).get(id) as IDBRequest<StoredEvent | undefined>
+  );
+  await transactionDone(read);
+  if (!record) throw new Error('La checada local ya no existe');
+  const payload = await decodePayload(token, record);
+  payload.identityAttemptId = input.attemptId;
+  payload.identityAttemptCapturedAt = input.capturedAt;
+  payload.evidenceStatus = input.evidenceStatus;
+  const [payloadEncrypted, photoEncrypted] = await Promise.all([
+    encodePayload(token, id, payload),
+    input.photo.arrayBuffer().then((bytes) => encrypt(token, id, 'photo', bytes)),
+  ]);
+  await updateRecord(id, (current) => {
+    current.payloadIv = payloadEncrypted.iv;
+    current.payloadCiphertext = payloadEncrypted.ciphertext;
+    current.photoIv = photoEncrypted.iv;
+    current.photoCiphertext = photoEncrypted.ciphertext;
+    current.photoMime = input.photo.type || 'image/jpeg';
+  });
+}
+
+export async function setIdentityOutcome(
+  token: string,
+  id: string,
+  outcome: 'verified' | 'identity_review',
+  bypassReason: QueuedEventPayload['identityBypassReason'] = null
+): Promise<void> {
+  const db = await database();
+  const read = db.transaction(EVENTS_STORE, 'readonly');
+  const record = await requestResult(
+    read.objectStore(EVENTS_STORE).get(id) as IDBRequest<StoredEvent | undefined>
+  );
+  await transactionDone(read);
+  if (!record) return;
+  const payload = await decodePayload(token, record);
+  payload.identityOutcome = outcome;
+  payload.identityBypassReason = bypassReason;
+  const encrypted = await encodePayload(token, id, payload);
+  await updateRecord(id, (current) => {
+    current.payloadIv = encrypted.iv;
+    current.payloadCiphertext = encrypted.ciphertext;
+  });
 }
 
 async function allStoredEvents(): Promise<StoredEvent[]> {

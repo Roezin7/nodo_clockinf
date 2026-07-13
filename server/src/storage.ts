@@ -7,10 +7,12 @@ import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand, List
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { config } from './config.js';
 
 export interface PhotoStorage {
   put(key: string, body: Buffer, contentType: string): Promise<void>;
+  get(key: string): Promise<Buffer>;
   /** URL temporal para visualizar la foto (firmada, expira). */
   viewUrl(key: string): Promise<string>;
   remove(key: string): Promise<void>;
@@ -32,6 +34,14 @@ class S3Storage implements PhotoStorage {
     await this.client.send(
       new PutObjectCommand({ Bucket: config.s3.bucket, Key: key, Body: body, ContentType: contentType })
     );
+  }
+
+  async get(key: string): Promise<Buffer> {
+    const response = await this.client.send(
+      new GetObjectCommand({ Bucket: config.s3.bucket, Key: key })
+    );
+    if (!response.Body) throw new Error('Objeto sin contenido');
+    return Buffer.from(await response.Body.transformToByteArray());
   }
 
   async viewUrl(key: string): Promise<string> {
@@ -73,8 +83,14 @@ class LocalStorage implements PhotoStorage {
     await fs.writeFile(p, body);
   }
 
+  async get(key: string): Promise<Buffer> {
+    return fs.readFile(this.filePath(key));
+  }
+
   async viewUrl(key: string): Promise<string> {
-    return `/api/photos/local/${encodeURIComponent(key)}`;
+    const expires = Math.floor(Date.now() / 1000) + 900;
+    const signature = localPhotoSignature(key, expires);
+    return `/api/photos/local/${encodeURIComponent(key)}?expires=${expires}&signature=${signature}`;
   }
 
   async remove(key: string): Promise<void> {
@@ -105,3 +121,25 @@ class LocalStorage implements PhotoStorage {
 export const storageIsLocal = !config.s3.accessKeyId;
 export const storage: PhotoStorage = storageIsLocal ? new LocalStorage() : new S3Storage();
 export { LOCAL_DIR };
+
+function localPhotoSignature(key: string, expires: number): string {
+  return crypto
+    .createHmac('sha256', config.jwtSecret)
+    .update(`${key}\n${expires}`)
+    .digest('base64url');
+}
+
+export function verifyLocalPhotoSignature(
+  key: string,
+  expiresValue: unknown,
+  signatureValue: unknown,
+  nowSeconds = Math.floor(Date.now() / 1000)
+): boolean {
+  if (typeof expiresValue !== 'string' || typeof signatureValue !== 'string') return false;
+  if (!/^\d{10}$/.test(expiresValue)) return false;
+  const expires = Number(expiresValue);
+  if (!Number.isSafeInteger(expires) || expires < nowSeconds || expires > nowSeconds + 900) return false;
+  const expected = Buffer.from(localPhotoSignature(key, expires));
+  const actual = Buffer.from(signatureValue);
+  return expected.length === actual.length && crypto.timingSafeEqual(expected, actual);
+}

@@ -3,6 +3,8 @@ export const KIOSK_TIMEOUT_MS = {
   self: 5_000,
   heartbeat: 5_000,
   enrollment: 10_000,
+  identitySession: 6_000,
+  identityAttempt: 15_000,
   sync: 15_000,
   photo: 15_000,
 } as const;

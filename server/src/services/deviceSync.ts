@@ -13,6 +13,8 @@ export interface ComparableClientEvent extends SequencedDeviceEvent {
   punch_type: string;
   evidence_status: string;
   client_clock_skew_seconds: number | null;
+  identity_session_id?: string | null;
+  identity_bypass_reason?: string | null;
 }
 
 export interface ComparablePersistedEvent {
@@ -23,6 +25,8 @@ export interface ComparablePersistedEvent {
   client_installation_id: string;
   evidence_status: string;
   client_clock_skew_seconds: number | null;
+  identity_session_id?: string | null;
+  identity_bypass_reason?: string | null;
 }
 
 export type CapturedAtValidation =
@@ -89,6 +93,8 @@ export function deviceEventMatches(
     persisted.evidence_status === client.evidence_status &&
     persisted.client_installation_id === client.client_installation_id &&
     persisted.client_clock_skew_seconds === client.client_clock_skew_seconds &&
+    (persisted.identity_session_id ?? null) === (client.identity_session_id ?? null) &&
+    (persisted.identity_bypass_reason ?? null) === (client.identity_bypass_reason ?? null) &&
     Number(persisted.client_sequence) === client.client_sequence &&
     persisted.captured_at.getTime() === new Date(client.captured_at).getTime()
   );

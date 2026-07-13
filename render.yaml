@@ -17,10 +17,10 @@ services:
         generateValue: true
       - key: JWT_REFRESH_SECRET
         generateValue: true
-      - key: KIOSK_DEVICE_TOKEN
-        generateValue: true
       - key: PLANT_TIMEZONE
-        value: America/Mexico_City
+        value: America/Los_Angeles
+      - key: FACE_PROVIDER
+        value: review_only
       # Cloudflare R2 — llenar en el dashboard de Render:
       - key: S3_ENDPOINT
         sync: false

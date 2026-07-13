@@ -114,6 +114,18 @@ export type PunchSource = 'kiosk' | 'manual';
 export type FaceCheckStatus = 'pending' | 'match' | 'mismatch' | 'review_ok' | 'skipped';
 export type PunchEvidenceStatus = 'pending' | 'captured' | 'camera_unavailable';
 export type DeviceEvidenceStatus = Exclude<PunchEvidenceStatus, 'pending'>;
+export type IdentityStatus =
+  | 'verified'
+  | 'identity_review'
+  | 'review_approved'
+  | 'review_rejected'
+  | 'not_required';
+export type IdentityBypassReason =
+  | 'camera_unavailable'
+  | 'provider_unavailable'
+  | 'offline'
+  | 'incomplete_session'
+  | 'legacy_pin';
 
 export interface Punch {
   id: string;
@@ -122,6 +134,8 @@ export interface Punch {
   device_id: string | null;
   client_event_id: string | null;
   client_installation_id: string | null;
+  identity_session_id: string | null;
+  identity_bypass_reason: IdentityBypassReason | null;
   employee_id: string;
   punch_type: PunchType;
   punched_at: string; // ISO UTC
@@ -139,13 +153,13 @@ export interface Punch {
   evidence_status: PunchEvidenceStatus;
   received_at: string;
   offline: boolean;
-  identity_status: 'verified' | 'identity_review' | 'review_approved' | 'review_rejected' | 'not_required';
+  identity_status: IdentityStatus;
   created_at: string;
 }
 
 export interface PunchIngestRequest {
   employee_number: number;
-  pin: string;
+  pin?: string | null;
   punch_type: PunchType;
   source: 'kiosk';
   client_event_id: string;
@@ -154,6 +168,8 @@ export interface PunchIngestRequest {
   client_sequence: number;
   client_clock_skew_seconds: number | null;
   evidence_status: DeviceEvidenceStatus;
+  identity_session_id?: string | null;
+  identity_bypass_reason?: IdentityBypassReason | null;
 }
 
 export interface PunchIngestResponse {
@@ -166,6 +182,7 @@ export interface PunchIngestResponse {
   punched_at_local: string;
   timezone: string;
   evidence_status: DeviceEvidenceStatus;
+  identity_status: IdentityStatus;
   duplicate?: boolean;
 }
 
@@ -178,6 +195,8 @@ export interface OfflinePunchEvent {
   client_sequence: number;
   client_clock_skew_seconds: number | null;
   evidence_status: DeviceEvidenceStatus;
+  identity_session_id?: string | null;
+  identity_bypass_reason?: IdentityBypassReason | null;
 }
 
 export type OfflinePunchSyncResult =
@@ -192,6 +211,7 @@ export type OfflinePunchSyncResult =
       punched_at_local: string;
       timezone: string;
       evidence_status: DeviceEvidenceStatus;
+      identity_status: IdentityStatus;
     }
   | {
       client_event_id: string | null;

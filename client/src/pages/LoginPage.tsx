@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { login, ApiError } from '../api';
 import { Button } from '../components/ui';
 import { Field, Input } from '../components/ui';
+import { landingRoute } from '../auth/accessPolicy';
 
 export default function LoginPage() {
   const [email, setEmail] = useState('');
@@ -16,8 +17,8 @@ export default function LoginPage() {
     setBusy(true);
     setError(null);
     try {
-      await login(email, password);
-      navigate('/dashboard');
+      const user = await login(email, password);
+      navigate(landingRoute(user.role), { replace: true });
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Error de conexión');
       setBusy(false);

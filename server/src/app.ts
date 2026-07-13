@@ -3,6 +3,7 @@ import cors from 'cors';
 import path from 'node:path';
 import fs from 'node:fs';
 import rateLimit from 'express-rate-limit';
+import multer from 'multer';
 import { ZodError } from 'zod';
 import { HttpError } from './errors.js';
 import { authRouter } from './routes/auth.js';
@@ -15,7 +16,8 @@ import { settingsRouter } from './routes/settings.js';
 import { usersRouter } from './routes/users.js';
 import { devicesRouter, organizationRouter, plantsRouter } from './routes/organization.js';
 import { manualTimeRouter } from './routes/manualTime.js';
-import { storageIsLocal, LOCAL_DIR } from './storage.js';
+import { identityReviewsRouter, kioskIdentityRouter } from './routes/identity.js';
+import { storageIsLocal, LOCAL_DIR, verifyLocalPhotoSignature } from './storage.js';
 
 export function createApp(): express.Express {
   const app = express();
@@ -52,6 +54,8 @@ export function createApp(): express.Express {
   app.use('/api/shifts', shiftsRouter);
   app.use('/api/areas', areasRouter);
   app.use('/api/punches', punchesRouter);
+  app.use('/api/punches/kiosk/identity', kioskIdentityRouter);
+  app.use('/api/identity-reviews', identityReviewsRouter);
   app.use('/api/attendance', attendanceRouter);
   app.use('/api/assignments', assignmentsRouter);
   app.use('/api/reports', reportsRouter);
@@ -66,11 +70,17 @@ export function createApp(): express.Express {
   if (storageIsLocal) {
     app.get('/api/photos/local/:key', (req, res) => {
       const key = decodeURIComponent(req.params.key);
+      if (!verifyLocalPhotoSignature(key, req.query.expires, req.query.signature)) {
+        res.status(403).json({ error: 'Enlace de foto inválido o expirado' });
+        return;
+      }
       const filePath = path.resolve(LOCAL_DIR, key);
       if (!filePath.startsWith(LOCAL_DIR + path.sep)) {
         res.status(400).end();
         return;
       }
+      res.setHeader('Cache-Control', 'private, no-store, max-age=0');
+      res.setHeader('Pragma', 'no-cache');
       res.sendFile(filePath, (err) => {
         if (err) res.status(404).json({ error: 'Foto no encontrada' });
       });
@@ -94,6 +104,13 @@ export function createApp(): express.Express {
   app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
     if (err instanceof ZodError) {
       res.status(400).json({ error: 'Datos inválidos', details: err.issues });
+      return;
+    }
+    if (err instanceof multer.MulterError) {
+      res.status(err.code === 'LIMIT_FILE_SIZE' ? 413 : 400).json({
+        error: err.code === 'LIMIT_FILE_SIZE' ? 'La imagen excede 5 MB' : 'Archivo inválido',
+        code: err.code,
+      });
       return;
     }
     if (err instanceof HttpError) {
