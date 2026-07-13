@@ -24,6 +24,7 @@
     "exceljs": "^4.4.0",
     "express": "^5.1.0",
     "express-rate-limit": "^7.4.0",
+    "helmet": "^8.3.0",
     "jsonwebtoken": "^9.0.2",
     "jszip": "3.10.1",
     "luxon": "^3.5.0",
