@@ -13,20 +13,33 @@ interface Entry {
   lockedUntil: number;
 }
 
-const entries = new Map<number, Entry>();
+const entries = new Map<string, Entry>();
+
+function key(organizationId: string, employeeNumber: number): string {
+  return `${organizationId}:${employeeNumber}`;
+}
 
 /** Segundos restantes de bloqueo, o 0 si puede intentar. */
-export function lockedForSeconds(employeeNumber: number, now = Date.now()): number {
-  const e = entries.get(employeeNumber);
+export function lockedForSeconds(
+  organizationId: string,
+  employeeNumber: number,
+  now = Date.now()
+): number {
+  const e = entries.get(key(organizationId, employeeNumber));
   if (!e) return 0;
   if (e.lockedUntil > now) return Math.ceil((e.lockedUntil - now) / 1000);
   return 0;
 }
 
-export function recordFailure(employeeNumber: number, now = Date.now()): void {
-  const e = entries.get(employeeNumber);
+export function recordFailure(
+  organizationId: string,
+  employeeNumber: number,
+  now = Date.now()
+): void {
+  const scopedKey = key(organizationId, employeeNumber);
+  const e = entries.get(scopedKey);
   if (!e || now - e.firstFailAt > WINDOW_MS) {
-    entries.set(employeeNumber, { fails: 1, firstFailAt: now, lockedUntil: 0 });
+    entries.set(scopedKey, { fails: 1, firstFailAt: now, lockedUntil: 0 });
     return;
   }
   e.fails += 1;
@@ -37,6 +50,10 @@ export function recordFailure(employeeNumber: number, now = Date.now()): void {
   }
 }
 
-export function recordSuccess(employeeNumber: number): void {
-  entries.delete(employeeNumber);
+export function recordSuccess(organizationId: string, employeeNumber: number): void {
+  entries.delete(key(organizationId, employeeNumber));
+}
+
+export function resetPinLimiterForTests(): void {
+  entries.clear();
 }

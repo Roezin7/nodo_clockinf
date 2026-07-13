@@ -32,7 +32,15 @@ export function createApp(): express.Express {
   // Anti abuso: el kiosco legítimo hace ~12 checadas/min como máximo
   app.use(
     '/api/punches/ingest',
+    rateLimit({ windowMs: 60_000, limit: 300, standardHeaders: true, legacyHeaders: false })
+  );
+  app.use(
+    '/api/punches/sync',
     rateLimit({ windowMs: 60_000, limit: 60, standardHeaders: true, legacyHeaders: false })
+  );
+  app.use(
+    '/api/punches/kiosk/enroll',
+    rateLimit({ windowMs: 60_000, limit: 10, standardHeaders: true, legacyHeaders: false })
   );
   app.use(
     '/api/auth/login',
@@ -89,7 +97,7 @@ export function createApp(): express.Express {
       return;
     }
     if (err instanceof HttpError) {
-      res.status(err.status).json({ error: err.message, code: err.code });
+      res.status(err.status).json({ error: err.message, code: err.code, details: err.details });
       return;
     }
     console.error(err);

@@ -1,6 +1,8 @@
 import type { Request, Response, NextFunction } from 'express';
+import crypto from 'node:crypto';
 import jwt from 'jsonwebtoken';
 import { config } from '../config.js';
+import { query, queryOne } from '../db.js';
 import { forbidden, unauthorized } from '../errors.js';
 
 export type UserRole = 'platform_operator' | 'admin' | 'foreman' | 'accountant';
@@ -13,11 +15,20 @@ export interface AuthUser {
   organizationId: string | null;
 }
 
+export interface AuthDevice {
+  id: string;
+  organizationId: string;
+  plantId: string;
+  name: string;
+  publicId: string;
+}
+
 declare global {
   // eslint-disable-next-line @typescript-eslint/no-namespace
   namespace Express {
     interface Request {
       user?: AuthUser;
+      device?: AuthDevice;
     }
   }
 }
@@ -70,9 +81,43 @@ export function requireOrganization(req: Request): string {
   return req.user.organizationId;
 }
 
-/** Autenticación del kiosco: token estático de dispositivo en header. */
-export function requireKiosk(req: Request, _res: Response, next: NextFunction): void {
+/**
+ * Device-scoped kiosk authentication. Enrollment tokens are only returned once
+ * and only their SHA-256 digest is persisted. A revoked device (or one whose
+ * tenant/plant was disabled) immediately loses access.
+ */
+export async function requireKiosk(
+  req: Request,
+  _res: Response,
+  next: NextFunction
+): Promise<void> {
   const token = req.headers['x-device-token'];
-  if (token !== config.kioskDeviceToken) throw unauthorized('Token de dispositivo inválido');
+  if (typeof token !== 'string' || token.length < 20) {
+    throw unauthorized('Token de dispositivo inválido');
+  }
+  const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
+  const device = await queryOne<{
+    id: string;
+    organization_id: string;
+    plant_id: string;
+    name: string;
+    public_id: string;
+  }>(
+    `SELECT d.id, d.organization_id, d.plant_id, d.name, d.public_id
+     FROM devices d
+     JOIN organizations o ON o.id = d.organization_id AND o.active
+     JOIN plants p ON p.id = d.plant_id AND p.organization_id = d.organization_id AND p.active
+     WHERE d.token_hash = $1 AND d.active AND d.enrolled_at IS NOT NULL`,
+    [tokenHash]
+  );
+  if (!device) throw unauthorized('Token de dispositivo inválido');
+  req.device = {
+    id: device.id,
+    organizationId: device.organization_id,
+    plantId: device.plant_id,
+    name: device.name,
+    publicId: device.public_id,
+  };
+  await query(`UPDATE devices SET last_seen_at = now() WHERE id = $1`, [device.id]);
   next();
 }

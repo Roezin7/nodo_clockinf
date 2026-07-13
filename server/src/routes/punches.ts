@@ -1,6 +1,8 @@
 import { Router } from 'express';
+import crypto from 'node:crypto';
 import bcrypt from 'bcryptjs';
 import multer from 'multer';
+import type { PoolClient } from 'pg';
 import { z } from 'zod';
 import { query, queryOne, withTransaction } from '../db.js';
 import { badRequest, conflict, notFound, unauthorized, HttpError } from '../errors.js';
@@ -10,20 +12,20 @@ import {
   requireOrganization,
   requireRole,
 } from '../middleware/auth.js';
-import { inferPunchType } from '../services/punchInference.js';
 import { lockedForSeconds, recordFailure, recordSuccess } from '../services/pinLimiter.js';
 import { getSettings } from '../services/settingsService.js';
-import { formatLocalTime, localDayBoundsUtc, localToUtc, workDateOf } from '../services/time.js';
+import { formatLocalTime, localToUtc, workDateOf } from '../services/time.js';
 import { storage } from '../storage.js';
-import type { MealWindow, PunchType } from '../types.js';
-import {
-  accessiblePlantIds,
-  assertPlantAccess,
-  getDefaultOrganizationId,
-  getDefaultPlantId,
-} from '../services/tenantService.js';
+import type { PunchType } from '../types.js';
+import { accessiblePlantIds, assertPlantAccess } from '../services/tenantService.js';
 import { recordAudit } from '../services/auditService.js';
 import { ensurePeriodOpen } from '../services/payPeriodService.js';
+import {
+  deviceEventMatches,
+  normalizeCapturedAtSnapshot,
+  sortDeviceEvents,
+  validateCapturedAt,
+} from '../services/deviceSync.js';
 
 export const punchesRouter = Router();
 
@@ -45,24 +47,284 @@ interface PunchRow {
   created_at: Date;
 }
 
-const ingestSchema = z.object({
-  employee_number: z.number().int().positive(),
+const punchTypeSchema = z.enum(['shift_in', 'shift_out', 'meal_out', 'meal_in']);
+const deviceEventSchema = z
+  .object({
+    employee_number: z.number().int().positive(),
+    punch_type: punchTypeSchema,
+    client_event_id: z.string().uuid(),
+    client_installation_id: z.string().uuid(),
+    captured_at: z.string().datetime({ offset: true }),
+    client_sequence: z.number().int().positive(),
+    client_clock_skew_seconds: z.number().int().nullable(),
+    evidence_status: z.enum(['captured', 'camera_unavailable']),
+  })
+  .strict();
+const ingestSchema = deviceEventSchema.extend({
   pin: z.string().regex(/^\d{4}$/),
-  punch_type: z.enum(['shift_in', 'shift_out', 'meal_out', 'meal_in']).nullish(),
   source: z.literal('kiosk'),
 });
+const syncSchema = z.object({ events: z.array(z.unknown()).min(1).max(100) }).strict();
 
 /**
- * Ingesta desde kiosco. Valida PIN, infiere tipo por secuencia, deduplica.
+ * One-time enrollment exchange. The enrollment code can never authenticate a
+ * kiosk request: it is atomically replaced by a fresh permanent credential.
+ */
+punchesRouter.post('/kiosk/enroll', async (req, res) => {
+  const body = z
+    .object({
+      enrollment_token: z.string().min(20).max(512),
+      // 32 random bytes encoded as unpadded base64url are 43 characters.
+      proposed_device_token: z
+        .string()
+        .min(43)
+        .max(172)
+        .regex(/^[A-Za-z0-9_-]+$/),
+    })
+    .strict()
+    .parse(req.body);
+  const enrollmentHash = crypto
+    .createHash('sha256')
+    .update(body.enrollment_token)
+    .digest('hex');
+  const deviceTokenHash = crypto
+    .createHash('sha256')
+    .update(body.proposed_device_token)
+    .digest('hex');
+  type EnrollmentDevice = {
+    id: string;
+    public_id: string;
+    name: string;
+    organization_id: string;
+    plant_id: string;
+    plant_code: string;
+    plant_name: string;
+    timezone: string;
+    enrolled_at: Date;
+  };
+  let device = await queryOne<EnrollmentDevice>(
+    `UPDATE devices d
+     SET token_hash = $2, enrolled_at = now(), last_seen_at = now()
+     FROM plants p, organizations o
+     WHERE d.token_hash = $1 AND d.enrolled_at IS NULL AND d.active
+       AND p.id = d.plant_id AND p.organization_id = d.organization_id AND p.active
+       AND o.id = d.organization_id AND o.active
+     RETURNING d.id, d.public_id, d.name, d.organization_id, d.plant_id,
+               p.code AS plant_code, p.name AS plant_name, o.timezone, d.enrolled_at`,
+    [enrollmentHash, deviceTokenHash]
+  );
+  let alreadyEnrolled = false;
+  if (!device) {
+    // Lost-response recovery: possession of the proposed credential is enough
+    // to prove the caller can authenticate this already-enrolled device.
+    device = await queryOne<EnrollmentDevice>(
+      `SELECT d.id, d.public_id, d.name, d.organization_id, d.plant_id,
+              p.code AS plant_code, p.name AS plant_name, o.timezone, d.enrolled_at
+       FROM devices d
+       JOIN plants p ON p.id = d.plant_id AND p.organization_id = d.organization_id AND p.active
+       JOIN organizations o ON o.id = d.organization_id AND o.active
+       WHERE d.token_hash = $1 AND d.enrolled_at IS NOT NULL AND d.active`,
+      [deviceTokenHash]
+    );
+    alreadyEnrolled = Boolean(device);
+  }
+  if (!device) throw unauthorized('Código de activación inválido o ya utilizado');
+  res.status(alreadyEnrolled ? 200 : 201).json({
+    device,
+    server_time: new Date().toISOString(),
+    already_enrolled: alreadyEnrolled,
+  });
+});
+
+interface ExistingDevicePunch {
+  id: string;
+  employee_number: number;
+  employee_name: string;
+  punch_type: PunchType;
+  punched_at: Date;
+  captured_at: Date;
+  client_installation_id: string;
+  client_sequence: string | number;
+  client_clock_skew_seconds: number | null;
+  evidence_status: 'captured' | 'camera_unavailable';
+}
+
+interface DeviceEvent {
+  employee_number: number;
+  punch_type: PunchType;
+  client_event_id: string;
+  client_installation_id: string;
+  captured_at: string;
+  client_sequence: number;
+  client_clock_skew_seconds: number | null;
+  evidence_status: 'captured' | 'camera_unavailable';
+}
+
+async function existingDevicePunch(
+  deviceId: string,
+  clientEventId: string
+): Promise<ExistingDevicePunch | null> {
+  const receipt = await queryOne<ExistingDevicePunch>(
+    `SELECT p.id, e.employee_number, e.full_name AS employee_name,
+            p.punch_type, p.punched_at, r.captured_at, r.client_installation_id,
+            r.client_sequence, r.client_clock_skew_seconds,
+            r.evidence_status
+     FROM device_event_receipts r
+     JOIN punches p ON p.id = r.punch_id AND p.device_id = r.device_id
+     JOIN employees e ON e.id = r.employee_id AND e.organization_id = r.organization_id
+     WHERE r.device_id = $1 AND r.client_event_id = $2`,
+    [deviceId, clientEventId]
+  );
+  if (receipt) return receipt;
+  // Migration/rollback compatibility for a punch written before receipts.
+  return queryOne<ExistingDevicePunch>(
+    `SELECT p.id, e.employee_number, e.full_name AS employee_name,
+            p.punch_type, p.punched_at, p.captured_at, p.client_installation_id,
+            p.client_sequence, p.client_clock_skew_seconds,
+            p.evidence_status
+     FROM punches p
+     JOIN employees e ON e.id = p.employee_id AND e.organization_id = p.organization_id
+     WHERE p.device_id = $1 AND p.client_event_id = $2`,
+    [deviceId, clientEventId]
+  );
+}
+
+async function insertDeviceReceipt(
+  client: PoolClient,
+  input: {
+    organizationId: string;
+    plantId: string;
+    deviceId: string;
+    punchId: string;
+    employeeId: string;
+    event: DeviceEvent;
+    disposition: 'new_punch' | 'semantic_duplicate';
+  }
+): Promise<void> {
+  await client.query(
+    `INSERT INTO device_event_receipts
+       (organization_id, plant_id, device_id, client_event_id, client_installation_id,
+        client_sequence, client_clock_skew_seconds,
+        punch_id, employee_id, punch_type, captured_at, evidence_status, disposition)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+    [
+      input.organizationId,
+      input.plantId,
+      input.deviceId,
+      input.event.client_event_id,
+      input.event.client_installation_id,
+      input.event.client_sequence,
+      input.event.client_clock_skew_seconds,
+      input.punchId,
+      input.employeeId,
+      input.event.punch_type,
+      new Date(input.event.captured_at),
+      input.event.evidence_status,
+      input.disposition,
+    ]
+  );
+}
+
+async function semanticDuplicatePunch(
+  client: PoolClient,
+  deviceId: string,
+  employeeId: string,
+  event: DeviceEvent
+): Promise<ExistingDevicePunch | null> {
+  await client.query(`SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))`, [
+    deviceId,
+    employeeId,
+  ]);
+  const result = await client.query<ExistingDevicePunch>(
+    `SELECT p.id, e.employee_number, e.full_name AS employee_name,
+            p.punch_type, p.punched_at, $5::timestamptz AS captured_at,
+            $4::uuid AS client_installation_id, $6::bigint AS client_sequence,
+            $7::text AS evidence_status, $8::integer AS client_clock_skew_seconds
+     FROM punches p
+     JOIN employees e ON e.id = p.employee_id AND e.organization_id = p.organization_id
+     WHERE p.device_id = $1 AND p.employee_id = $2 AND p.punch_type = $3
+       AND p.client_installation_id = $4::uuid
+       AND abs(extract(epoch FROM (p.captured_at - $5::timestamptz))) <= 3
+       AND p.evidence_status = $7
+       AND p.client_clock_skew_seconds IS NOT DISTINCT FROM $8::integer
+     ORDER BY abs(extract(epoch FROM (p.captured_at - $5::timestamptz))), p.created_at
+     LIMIT 1`,
+    [
+      deviceId,
+      employeeId,
+      event.punch_type,
+      event.client_installation_id,
+      new Date(event.captured_at),
+      event.client_sequence,
+      event.evidence_status,
+      event.client_clock_skew_seconds,
+    ]
+  );
+  return result.rows[0] ?? null;
+}
+
+function successfulSyncResult(
+  status: 'accepted' | 'duplicate',
+  event: DeviceEvent,
+  punch: ExistingDevicePunch,
+  timezone: string
+) {
+  return {
+    client_event_id: event.client_event_id,
+    client_sequence: event.client_sequence,
+    status,
+    punch_id: punch.id,
+    employee_name: punch.employee_name,
+    punch_type: punch.punch_type,
+    punched_at: punch.punched_at.toISOString(),
+    punched_at_local: formatLocalTime(punch.punched_at, timezone),
+    timezone,
+    evidence_status: punch.evidence_status,
+  } as const;
+}
+
+function databaseConstraint(error: unknown): string | undefined {
+  if (!error || typeof error !== 'object') return undefined;
+  return (error as { constraint?: string }).constraint;
+}
+
+/**
+ * Online kiosk ingestion. The server receipt time is authoritative for payroll;
+ * captured_at remains immutable evidence of the tablet clock. Idempotency is by
+ * device + client event UUID and never expires.
  * La foto NO viaja aquí: se sube después a /api/punches/:id/photo para que
  * la respuesta salga en <300ms y no detenga la fila.
  */
 punchesRouter.post('/ingest', requireKiosk, async (req, res) => {
   const body = ingestSchema.parse(req.body);
-  const organizationId = await getDefaultOrganizationId();
-  const plantId = await getDefaultPlantId(organizationId);
+  const device = req.device!;
+  const organizationId = device.organizationId;
+  const plantId = device.plantId;
+  const settings = await getSettings(organizationId);
 
-  const lockSeconds = lockedForSeconds(body.employee_number);
+  const existing = await existingDevicePunch(device.id, body.client_event_id);
+  if (existing) {
+    if (!deviceEventMatches(existing, body)) {
+      throw conflict(
+        'El UUID del evento ya existe con datos diferentes',
+        'client_event_payload_conflict'
+      );
+    }
+    res.status(200).json({
+      punch_id: existing.id,
+      employee_name: existing.employee_name,
+      punch_type: existing.punch_type,
+      punch_type_inferred: existing.punch_type,
+      punched_at: existing.punched_at.toISOString(),
+      punched_at_local: formatLocalTime(existing.punched_at, settings.timezone),
+      timezone: settings.timezone,
+      evidence_status: existing.evidence_status,
+      duplicate: true,
+    });
+    return;
+  }
+
+  const lockSeconds = lockedForSeconds(organizationId, body.employee_number);
   if (lockSeconds > 0) {
     throw new HttpError(429, `Bloqueado por intentos fallidos. Espera ${lockSeconds}s`, 'pin_locked');
   }
@@ -74,86 +336,564 @@ punchesRouter.post('/ingest', requireKiosk, async (req, res) => {
   );
   // Mensaje genérico: no revelar si el número existe
   if (!employee) {
-    recordFailure(body.employee_number);
+    recordFailure(organizationId, body.employee_number);
     throw unauthorized('Número o PIN incorrecto');
   }
   if (!(await bcrypt.compare(body.pin, employee.pin_hash))) {
-    recordFailure(body.employee_number);
+    recordFailure(organizationId, body.employee_number);
     throw unauthorized('Número o PIN incorrecto');
   }
-  recordSuccess(body.employee_number);
+  recordSuccess(organizationId, body.employee_number);
 
-  const settings = await getSettings(organizationId);
   const tz = settings.timezone;
-  const now = new Date();
-  const { startUtc, endUtc, workDate } = localDayBoundsUtc(now, tz);
-
-  const lastPunch = await queryOne<{ punch_type: PunchType; punched_at: Date; id: string }>(
-    `SELECT id, punch_type, punched_at FROM punches
-     WHERE employee_id = $1 AND NOT voided AND punched_at BETWEEN $2 AND $3
-       AND organization_id = $4
-     ORDER BY punched_at DESC LIMIT 1`,
-    [employee.id, startUtc, endUtc, organizationId]
-  );
-
-  // Deduplicación: una checada del mismo empleado dentro de la ventana
-  // (default 2 min) es un doble tap — se regresa la existente sin insertar.
-  // Solo cuenta hacia atrás: una checada futura (corrección mal fechada) no
-  // debe tragarse las checadas reales del kiosco.
-  const sinceLastMs = lastPunch ? now.getTime() - lastPunch.punched_at.getTime() : -1;
-  if (lastPunch && sinceLastMs >= 0 && sinceLastMs < settings.duplicate_window_minutes * 60_000) {
-    res.status(200).json({
-      punch_id: lastPunch.id,
-      employee_name: employee.full_name,
-      punch_type_inferred: lastPunch.punch_type,
-      punched_at: lastPunch.punched_at.toISOString(),
-      punched_at_local: formatLocalTime(lastPunch.punched_at, tz),
-      timezone: tz,
-      duplicate: true,
-    });
-    return;
-  }
-
-  let punchType: PunchType;
-  if (body.punch_type) {
-    punchType = body.punch_type;
-  } else {
-    let mealWindows: MealWindow[] = [];
-    if (employee.default_shift_id) {
-      const shift = await queryOne<{ meal_windows: MealWindow[] }>(
-        `SELECT meal_windows FROM shifts WHERE id = $1 AND organization_id = $2`,
-        [employee.default_shift_id, organizationId]
+  const receivedAt = new Date();
+  // Online payable time is always the server receipt time. A badly configured
+  // tablet clock is heartbeat telemetry, never a reason to block a valid punch.
+  const capturedAt = new Date(body.captured_at);
+  const workDate = workDateOf(receivedAt, tz);
+  let created: { punch: ExistingDevicePunch; duplicate: boolean };
+  try {
+    created = await withTransaction(async (client) => {
+      await ensurePeriodOpen(client, organizationId, workDate, tz);
+      const semantic = await semanticDuplicatePunch(client, device.id, employee.id, body);
+      if (semantic) {
+        await insertDeviceReceipt(client, {
+          organizationId,
+          plantId,
+          deviceId: device.id,
+          punchId: semantic.id,
+          employeeId: employee.id,
+          event: body,
+          disposition: 'semantic_duplicate',
+        });
+        await recordAudit(
+          {
+            organizationId,
+            actorDeviceId: device.id,
+            action: 'punch.kiosk_semantic_duplicate',
+            entityType: 'punch',
+            entityId: semantic.id,
+            metadata: {
+              client_event_id: body.client_event_id,
+              client_installation_id: body.client_installation_id,
+              client_sequence: body.client_sequence,
+              client_clock_skew_seconds: body.client_clock_skew_seconds,
+              captured_at: body.captured_at,
+            },
+          },
+          client
+        );
+        return { punch: semantic, duplicate: true };
+      }
+      const assignment = await client.query<{ area_id: string }>(
+        `SELECT area_id FROM daily_area_assignments
+         WHERE employee_id = $1 AND work_date = $2
+           AND organization_id = $3 AND plant_id = $4
+         ORDER BY id DESC LIMIT 1`,
+        [employee.id, workDate, organizationId, plantId]
       );
-      mealWindows = shift?.meal_windows ?? [];
+      const inserted = await client.query<{ id: string; punched_at: Date }>(
+        `INSERT INTO punches
+           (organization_id, plant_id, device_id, client_event_id, client_installation_id,
+            client_sequence,
+            client_clock_skew_seconds, evidence_status, employee_id, punch_type, punched_at,
+            captured_at, received_at, area_id,
+            source, offline, identity_status, face_check_status)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $11, $13,
+                 'kiosk', false,
+                 CASE WHEN $8 = 'camera_unavailable' THEN 'identity_review' ELSE 'verified' END,
+                 CASE WHEN $8 = 'camera_unavailable' THEN 'skipped' ELSE 'pending' END)
+         ON CONFLICT (device_id, client_event_id)
+           WHERE device_id IS NOT NULL AND client_event_id IS NOT NULL
+         DO NOTHING
+         RETURNING id, punched_at`,
+        [
+          organizationId,
+          plantId,
+          device.id,
+          body.client_event_id,
+          body.client_installation_id,
+          body.client_sequence,
+          body.client_clock_skew_seconds,
+          body.evidence_status,
+          employee.id,
+          body.punch_type,
+          receivedAt,
+          capturedAt,
+          assignment.rows[0]?.area_id ?? null,
+        ]
+      );
+      if (!inserted.rows[0]) {
+        const duplicate = await client.query<ExistingDevicePunch>(
+          `SELECT p.id, e.employee_number, e.full_name AS employee_name,
+                  p.punch_type, p.punched_at, p.captured_at, p.client_installation_id,
+                  p.client_sequence, p.client_clock_skew_seconds,
+                  p.evidence_status
+           FROM punches p JOIN employees e ON e.id = p.employee_id
+           WHERE p.device_id = $1 AND p.client_event_id = $2`,
+          [device.id, body.client_event_id]
+        );
+        if (!duplicate.rows[0]) throw new Error('idempotent punch disappeared');
+        return { punch: duplicate.rows[0], duplicate: true };
+      }
+      await insertDeviceReceipt(client, {
+        organizationId,
+        plantId,
+        deviceId: device.id,
+        punchId: inserted.rows[0].id,
+        employeeId: employee.id,
+        event: body,
+        disposition: 'new_punch',
+      });
+      await recordAudit(
+        {
+          organizationId,
+          actorDeviceId: device.id,
+          action: 'punch.kiosk_created',
+          entityType: 'punch',
+          entityId: inserted.rows[0].id,
+          metadata: {
+            client_event_id: body.client_event_id,
+            client_installation_id: body.client_installation_id,
+            client_sequence: body.client_sequence,
+            client_clock_skew_seconds: body.client_clock_skew_seconds,
+            evidence_status: body.evidence_status,
+            offline: false,
+          },
+        },
+        client
+      );
+      return {
+        punch: {
+          id: inserted.rows[0].id,
+          employee_number: body.employee_number,
+          employee_name: employee.full_name,
+          punch_type: body.punch_type,
+          punched_at: inserted.rows[0].punched_at,
+          captured_at: capturedAt,
+          client_installation_id: body.client_installation_id,
+          client_sequence: body.client_sequence,
+          client_clock_skew_seconds: body.client_clock_skew_seconds,
+          evidence_status: body.evidence_status,
+        },
+        duplicate: false,
+      };
+    });
+  } catch (error) {
+    const concurrent = await existingDevicePunch(device.id, body.client_event_id);
+    if (concurrent) {
+      if (!deviceEventMatches(concurrent, body)) {
+        throw conflict(
+          'El UUID del evento ya existe con datos diferentes',
+          'client_event_payload_conflict'
+        );
+      }
+      created = { punch: concurrent, duplicate: true };
+    } else if (
+      databaseConstraint(error) === 'punches_device_sequence_idx' ||
+      databaseConstraint(error) === 'receipts_device_install_sequence_unique'
+    ) {
+      throw conflict(
+        'La secuencia del dispositivo ya fue usada por otro evento',
+        'client_sequence_conflict'
+      );
+    } else {
+      throw error;
     }
-    punchType = inferPunchType(lastPunch?.punch_type ?? null, now, mealWindows, tz);
   }
 
-  // Área del día si ya fue asignada (la más reciente si hay varias)
-  const assignment = await queryOne<{ area_id: string }>(
-    `SELECT area_id FROM daily_area_assignments
-     WHERE employee_id = $1 AND work_date = $2
-       AND organization_id = $3
-     ORDER BY id DESC LIMIT 1`,
-    [employee.id, workDate, organizationId]
-  );
+  if (created.duplicate && !deviceEventMatches(created.punch, body)) {
+    throw conflict('El UUID del evento ya existe con datos diferentes', 'client_event_payload_conflict');
+  }
 
-  const punch = await queryOne<{ id: string; punched_at: Date }>(
-    `INSERT INTO punches
-       (organization_id, plant_id, employee_id, punch_type, punched_at, captured_at, area_id, source)
-     VALUES ($1, $2, $3, $4, $5, $5, $6, 'kiosk')
-     RETURNING id, punched_at`,
-    [organizationId, plantId, employee.id, punchType, now, assignment?.area_id ?? null]
-  );
-
-  res.status(201).json({
-    punch_id: punch!.id,
-    employee_name: employee.full_name,
-    punch_type_inferred: punchType,
-    punched_at: punch!.punched_at.toISOString(),
+  res.status(created.duplicate ? 200 : 201).json({
+    punch_id: created.punch.id,
+    employee_name: created.punch.employee_name,
+    punch_type: created.punch.punch_type,
+    punch_type_inferred: created.punch.punch_type,
+    punched_at: created.punch.punched_at.toISOString(),
     // El kiosco muestra ESTA hora, formateada por el servidor: nunca la del dispositivo
-    punched_at_local: formatLocalTime(punch!.punched_at, tz),
+    punched_at_local: formatLocalTime(created.punch.punched_at, tz),
     timezone: tz,
+    evidence_status: created.punch.evidence_status,
+    duplicate: created.duplicate,
+  });
+});
+
+/** Device identity and time anchor used at kiosk startup. */
+punchesRouter.get('/kiosk/self', requireKiosk, async (req, res) => {
+  const device = req.device!;
+  const row = await queryOne(
+    `SELECT d.id, d.public_id, d.name, d.organization_id, d.plant_id,
+            d.enrolled_at, d.last_seen_at, d.last_sync_at, d.last_heartbeat_at,
+            d.pending_event_count, d.rejected_event_count, d.app_version, d.camera_status,
+            d.storage_status, d.clock_skew_seconds, d.last_error, p.code AS plant_code,
+            p.name AS plant_name, o.name AS organization_name, o.timezone
+     FROM devices d
+     JOIN plants p ON p.id = d.plant_id AND p.organization_id = d.organization_id
+     JOIN organizations o ON o.id = d.organization_id
+     WHERE d.id = $1`,
+    [device.id]
+  );
+  if (!row) throw unauthorized('Dispositivo no disponible');
+  res.json({ ...row, server_time: new Date().toISOString() });
+});
+
+const heartbeatSchema = z.object({
+  pending_count: z.number().int().min(0).max(1_000_000).nullable().optional(),
+  rejected_count: z.number().int().min(0).max(1_000_000).nullable().optional(),
+  app_version: z.string().trim().min(1).max(64),
+  camera_status: z.enum(['unknown', 'ready', 'degraded', 'unavailable']).optional(),
+  storage_status: z.enum(['unknown', 'ready', 'degraded', 'unavailable']).optional(),
+  client_time: z.string().datetime({ offset: true }).optional(),
+  last_error: z.string().trim().max(500).nullable().optional(),
+});
+
+punchesRouter.post('/kiosk/heartbeat', requireKiosk, async (req, res) => {
+  const body = heartbeatSchema.parse(req.body);
+  const device = req.device!;
+  const serverTime = new Date();
+  const clockSkewSeconds = body.client_time
+    ? Math.round((new Date(body.client_time).getTime() - serverTime.getTime()) / 1000)
+    : null;
+  await query(
+    `UPDATE devices
+     SET last_seen_at = now(), last_heartbeat_at = now(),
+         pending_event_count = COALESCE($2, pending_event_count),
+         rejected_event_count = COALESCE($3, rejected_event_count), app_version = $4,
+         camera_status = COALESCE($5, camera_status),
+         storage_status = COALESCE($6, storage_status),
+         clock_skew_seconds = COALESCE($7, clock_skew_seconds), last_error = $8,
+         last_ip = $9::inet
+     WHERE id = $1`,
+    [
+      device.id,
+      body.pending_count ?? null,
+      body.rejected_count ?? null,
+      body.app_version,
+      body.camera_status ?? null,
+      body.storage_status ?? null,
+      clockSkewSeconds,
+      body.last_error ?? null,
+      req.ip,
+    ]
+  );
+  res.json({ ok: true, server_time: serverTime.toISOString(), clock_skew_seconds: clockSkewSeconds });
+});
+
+/**
+ * Durable offline queue synchronization. Every syntactically valid event gets
+ * its own transaction so a closed week or corrupt event cannot discard the
+ * other 99 events. Offline evidence always enters identity review.
+ */
+punchesRouter.post('/sync', requireKiosk, async (req, res) => {
+  const body = syncSchema.parse(req.body);
+  const device = req.device!;
+  const settings = await getSettings(device.organizationId);
+  const invalidResults: Array<Record<string, unknown>> = [];
+  const validEvents: DeviceEvent[] = [];
+
+  for (const raw of body.events) {
+    const parsed = deviceEventSchema.safeParse(raw);
+    if (parsed.success) {
+      validEvents.push(parsed.data);
+      continue;
+    }
+    const candidate = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {};
+    invalidResults.push({
+      client_event_id:
+        typeof candidate.client_event_id === 'string' ? candidate.client_event_id : null,
+      client_sequence:
+        typeof candidate.client_sequence === 'number' ? candidate.client_sequence : null,
+      status: 'rejected',
+      code: 'invalid_event',
+      error: 'Evento inválido',
+      details: parsed.error.issues,
+    });
+  }
+
+  const results: Array<Record<string, unknown>> = [];
+  for (const event of sortDeviceEvents(validEvents)) {
+    try {
+      const existing = await existingDevicePunch(device.id, event.client_event_id);
+      if (existing) {
+        if (!deviceEventMatches(existing, event)) {
+          results.push({
+            client_event_id: event.client_event_id,
+            client_sequence: event.client_sequence,
+            status: 'rejected',
+            code: 'client_event_payload_conflict',
+            error: 'El UUID del evento ya existe con datos diferentes',
+          });
+        } else {
+          results.push(successfulSyncResult('duplicate', event, existing, settings.timezone));
+        }
+        continue;
+      }
+
+      const rawCapturedAt = new Date(event.captured_at);
+      const normalizedCapturedAt = normalizeCapturedAtSnapshot(
+        event.captured_at,
+        event.client_clock_skew_seconds
+      );
+      const captured = validateCapturedAt(normalizedCapturedAt.toISOString());
+      if (!captured.ok) {
+        results.push({
+          client_event_id: event.client_event_id,
+          client_sequence: event.client_sequence,
+          status: 'rejected',
+          code: captured.code,
+          error: captured.error,
+        });
+        continue;
+      }
+
+      const employee = await queryOne<{ id: string; full_name: string }>(
+        `SELECT id, full_name FROM employees
+         WHERE organization_id = $1 AND employee_number = $2 AND active`,
+        [device.organizationId, event.employee_number]
+      );
+      if (!employee) {
+        results.push({
+          client_event_id: event.client_event_id,
+          client_sequence: event.client_sequence,
+          status: 'rejected',
+          code: 'employee_not_found',
+          error: 'Empleado activo no encontrado',
+        });
+        continue;
+      }
+
+      const workDate = workDateOf(captured.date, settings.timezone);
+      const created = await withTransaction(async (client) => {
+        await ensurePeriodOpen(client, device.organizationId, workDate, settings.timezone);
+        const semantic = await semanticDuplicatePunch(client, device.id, employee.id, event);
+        if (semantic) {
+          await insertDeviceReceipt(client, {
+            organizationId: device.organizationId,
+            plantId: device.plantId,
+            deviceId: device.id,
+            punchId: semantic.id,
+            employeeId: employee.id,
+            event,
+            disposition: 'semantic_duplicate',
+          });
+          await recordAudit(
+            {
+              organizationId: device.organizationId,
+              actorDeviceId: device.id,
+              action: 'punch.kiosk_semantic_duplicate',
+              entityType: 'punch',
+              entityId: semantic.id,
+              metadata: {
+                client_event_id: event.client_event_id,
+                client_installation_id: event.client_installation_id,
+                client_sequence: event.client_sequence,
+                client_clock_skew_seconds: event.client_clock_skew_seconds,
+                captured_at: event.captured_at,
+                offline: true,
+              },
+            },
+            client
+          );
+          return { punch: semantic, duplicate: true };
+        }
+        const assignment = await client.query<{ area_id: string }>(
+          `SELECT area_id FROM daily_area_assignments
+           WHERE employee_id = $1 AND work_date = $2
+             AND organization_id = $3 AND plant_id = $4
+           ORDER BY id DESC LIMIT 1`,
+          [employee.id, workDate, device.organizationId, device.plantId]
+        );
+        const inserted = await client.query<{ id: string; punched_at: Date }>(
+          `INSERT INTO punches
+             (organization_id, plant_id, device_id, client_event_id, client_installation_id,
+              client_sequence,
+              client_clock_skew_seconds, evidence_status, employee_id, punch_type, punched_at,
+              captured_at, received_at, area_id,
+              source, offline, identity_status, face_check_status)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, now(), $13,
+                   'kiosk', true, 'identity_review',
+                   CASE WHEN $8 = 'camera_unavailable' THEN 'skipped' ELSE 'pending' END)
+           ON CONFLICT (device_id, client_event_id)
+             WHERE device_id IS NOT NULL AND client_event_id IS NOT NULL
+           DO NOTHING
+           RETURNING id, punched_at`,
+          [
+            device.organizationId,
+            device.plantId,
+            device.id,
+            event.client_event_id,
+            event.client_installation_id,
+            event.client_sequence,
+            event.client_clock_skew_seconds,
+            event.evidence_status,
+            employee.id,
+            event.punch_type,
+            captured.date,
+            rawCapturedAt,
+            assignment.rows[0]?.area_id ?? null,
+          ]
+        );
+        if (!inserted.rows[0]) return null;
+        await insertDeviceReceipt(client, {
+          organizationId: device.organizationId,
+          plantId: device.plantId,
+          deviceId: device.id,
+          punchId: inserted.rows[0].id,
+          employeeId: employee.id,
+          event,
+          disposition: 'new_punch',
+        });
+        await recordAudit(
+          {
+            organizationId: device.organizationId,
+            actorDeviceId: device.id,
+            action: 'punch.kiosk_created',
+            entityType: 'punch',
+            entityId: inserted.rows[0].id,
+            metadata: {
+              client_event_id: event.client_event_id,
+              client_installation_id: event.client_installation_id,
+              client_sequence: event.client_sequence,
+              client_clock_skew_seconds: event.client_clock_skew_seconds,
+              evidence_status: event.evidence_status,
+              offline: true,
+            },
+          },
+          client
+        );
+        return {
+          punch: {
+            id: inserted.rows[0].id,
+            employee_number: event.employee_number,
+            employee_name: employee.full_name,
+            punch_type: event.punch_type,
+            punched_at: inserted.rows[0].punched_at,
+            captured_at: rawCapturedAt,
+            client_installation_id: event.client_installation_id,
+            client_sequence: event.client_sequence,
+            client_clock_skew_seconds: event.client_clock_skew_seconds,
+            evidence_status: event.evidence_status,
+          } satisfies ExistingDevicePunch,
+          duplicate: false,
+        };
+      });
+
+      if (!created) {
+        const duplicate = await existingDevicePunch(device.id, event.client_event_id);
+        if (!duplicate) throw new Error('idempotent punch disappeared');
+        if (!deviceEventMatches(duplicate, event)) {
+          results.push({
+            client_event_id: event.client_event_id,
+            client_sequence: event.client_sequence,
+            status: 'rejected',
+            code: 'client_event_payload_conflict',
+            error: 'El UUID del evento ya existe con datos diferentes',
+          });
+        } else {
+          results.push(successfulSyncResult('duplicate', event, duplicate, settings.timezone));
+        }
+      } else {
+        results.push(
+          successfulSyncResult(
+            created.duplicate ? 'duplicate' : 'accepted',
+            event,
+            created.punch,
+            settings.timezone
+          )
+        );
+      }
+    } catch (error) {
+      const concurrent = await existingDevicePunch(device.id, event.client_event_id);
+      if (concurrent) {
+        if (deviceEventMatches(concurrent, event)) {
+          results.push(successfulSyncResult('duplicate', event, concurrent, settings.timezone));
+        } else {
+          results.push({
+            client_event_id: event.client_event_id,
+            client_sequence: event.client_sequence,
+            status: 'rejected',
+            code: 'client_event_payload_conflict',
+            error: 'El UUID del evento ya existe con datos diferentes',
+          });
+        }
+        continue;
+      }
+      const sequenceConflict = databaseConstraint(error) === 'punches_device_sequence_idx';
+      const receiptSequenceConflict =
+        databaseConstraint(error) === 'receipts_device_install_sequence_unique';
+      if (!(error instanceof HttpError) && !sequenceConflict && !receiptSequenceConflict) {
+        console.error(error);
+      }
+      results.push({
+        client_event_id: event.client_event_id,
+        client_sequence: event.client_sequence,
+        status: 'rejected',
+        code: sequenceConflict || receiptSequenceConflict
+          ? 'client_sequence_conflict'
+          : error instanceof HttpError
+            ? (error.code ?? 'event_rejected')
+            : 'internal_error',
+        error: sequenceConflict || receiptSequenceConflict
+          ? 'La secuencia del dispositivo ya fue usada por otro evento'
+          : error instanceof HttpError
+            ? error.message
+            : 'No se pudo sincronizar la checada',
+      });
+    }
+  }
+
+  const allResults = [...results, ...invalidResults];
+  const accepted = allResults.filter((item) => item.status === 'accepted').length;
+  const duplicates = allResults.filter((item) => item.status === 'duplicate').length;
+  const rejected = allResults.filter((item) => item.status === 'rejected').length;
+  if (rejected > 0) {
+    const eventById = new Map(validEvents.map((event) => [event.client_event_id, event]));
+    await withTransaction(async (client) => {
+      for (const result of allResults.filter((item) => item.status === 'rejected')) {
+        const event =
+          typeof result.client_event_id === 'string'
+            ? eventById.get(result.client_event_id)
+            : undefined;
+        await recordAudit(
+          {
+            organizationId: device.organizationId,
+            actorDeviceId: device.id,
+            action: 'device.sync_event_rejected',
+            entityType: 'device',
+            entityId: device.id,
+            metadata: {
+              client_event_id: result.client_event_id ?? null,
+              client_installation_id: event?.client_installation_id ?? null,
+              client_sequence: result.client_sequence ?? null,
+              employee_number: event?.employee_number ?? null,
+              punch_type: event?.punch_type ?? null,
+              captured_at: event?.captured_at ?? null,
+              client_clock_skew_seconds: event?.client_clock_skew_seconds ?? null,
+              evidence_status: event?.evidence_status ?? null,
+              code: result.code,
+            },
+          },
+          client
+        );
+      }
+    });
+  }
+  const syncedAt = new Date();
+  await query(
+    `UPDATE devices
+     SET last_seen_at = $2, last_sync_at = $2,
+         rejected_event_count = GREATEST(rejected_event_count, $3)
+     WHERE id = $1`,
+    [device.id, syncedAt, rejected]
+  );
+  res.json({
+    results: allResults,
+    accepted,
+    duplicates,
+    rejected,
+    synced_at: syncedAt.toISOString(),
   });
 });
 
@@ -163,10 +903,12 @@ punchesRouter.post('/ingest', requireKiosk, async (req, res) => {
  */
 punchesRouter.post('/:id/photo', requireKiosk, upload.single('photo'), async (req, res) => {
   if (!req.file) throw badRequest('Falta archivo photo');
-  const organizationId = await getDefaultOrganizationId();
+  const device = req.device!;
+  const organizationId = device.organizationId;
   const punch = await queryOne<{ id: string; punched_at: Date; photo_key: string | null }>(
-    `SELECT id, punched_at, photo_key FROM punches WHERE id = $1 AND organization_id = $2`,
-    [req.params.id, organizationId]
+    `SELECT id, punched_at, photo_key FROM punches
+     WHERE id = $1 AND organization_id = $2 AND device_id = $3`,
+    [req.params.id, organizationId, device.id]
   );
   if (!punch) throw notFound('Checada no encontrada');
   if (punch.photo_key) {

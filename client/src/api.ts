@@ -28,7 +28,9 @@ export function storeAuth(auth: StoredAuth | null): void {
 export class ApiError extends Error {
   constructor(
     public status: number,
-    message: string
+    message: string,
+    public code?: string,
+    public details?: unknown
   ) {
     super(message);
   }
@@ -71,8 +73,8 @@ export async function api<T>(path: string, options: RequestInit = {}, retry = tr
     if (await tryRefresh()) return api<T>(path, options, false);
   }
   if (!res.ok) {
-    const body = (await res.json().catch(() => ({}))) as { error?: string };
-    throw new ApiError(res.status, body.error ?? `Error ${res.status}`);
+    const body = (await res.json().catch(() => ({}))) as { error?: string; code?: string; details?: unknown };
+    throw new ApiError(res.status, body.error ?? `Error ${res.status}`, body.code, body.details);
   }
   if (res.status === 204) return undefined as T;
   return (await res.json()) as T;
@@ -85,8 +87,8 @@ export async function login(email: string, password: string): Promise<User> {
     body: JSON.stringify({ email, password }),
   });
   if (!res.ok) {
-    const body = (await res.json().catch(() => ({}))) as { error?: string };
-    throw new ApiError(res.status, body.error ?? 'Error de login');
+    const body = (await res.json().catch(() => ({}))) as { error?: string; code?: string; details?: unknown };
+    throw new ApiError(res.status, body.error ?? 'Error de login', body.code, body.details);
   }
   const data = (await res.json()) as LoginResponse;
   storeAuth({ access_token: data.access_token, refresh_token: data.refresh_token, user: data.user });

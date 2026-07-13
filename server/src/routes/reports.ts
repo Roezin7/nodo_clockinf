@@ -3,7 +3,7 @@ import { DateTime } from 'luxon';
 import ExcelJS from 'exceljs';
 import { z } from 'zod';
 import { query, queryOne, withTransaction } from '../db.js';
-import { badRequest, conflict, notFound } from '../errors.js';
+import { badRequest, conflict, notFound, HttpError } from '../errors.js';
 import {
   requireAuth,
   requireAdmin,
@@ -21,6 +21,10 @@ import {
   type PayPeriodStatus,
 } from '../services/payPeriodService.js';
 import { recordAudit } from '../services/auditService.js';
+import {
+  deviceHealthReasons,
+  periodHeartbeatBoundary,
+} from '../services/deviceHealth.js';
 
 export const reportsRouter = Router();
 reportsRouter.use(requireAuth, requireRole('admin', 'accountant'));
@@ -43,6 +47,46 @@ interface PeriodReportRow {
   snapshot_hash: string | null;
   finalized_at: Date | null;
   finalized_by_name: string | null;
+}
+
+interface DeviceHealthBlocker {
+  id: string;
+  name: string;
+  plant_name: string;
+  reasons: string[];
+  pending_event_count: number;
+  rejected_event_count: number;
+  last_heartbeat_at: Date | null;
+  storage_status: 'unknown' | 'ready' | 'degraded' | 'unavailable';
+}
+
+async function finalizationDeviceHealthBlockers(
+  client: import('pg').PoolClient,
+  organizationId: string,
+  requiredHeartbeatAfter: Date,
+  now = new Date()
+): Promise<DeviceHealthBlocker[]> {
+  const result = await client.query<{
+    id: string;
+    name: string;
+    plant_name: string;
+    pending_event_count: number;
+    rejected_event_count: number;
+    last_heartbeat_at: Date | null;
+    storage_status: 'unknown' | 'ready' | 'degraded' | 'unavailable';
+  }>(
+    `SELECT d.id, d.name, p.name AS plant_name, d.pending_event_count,
+            d.rejected_event_count, d.last_heartbeat_at, d.storage_status
+     FROM devices d
+     JOIN plants p ON p.id = d.plant_id AND p.organization_id = d.organization_id
+     WHERE d.organization_id = $1 AND d.active AND d.enrolled_at IS NOT NULL
+     ORDER BY p.code, d.name`,
+    [organizationId]
+  );
+  return result.rows.flatMap((device) => {
+    const reasons = deviceHealthReasons(device, now, requiredHeartbeatAfter);
+    return reasons.length ? [{ ...device, reasons }] : [];
+  });
 }
 
 async function getPeriodReport(organizationId: string, weekStart: string): Promise<PeriodReportRow | null> {
@@ -131,65 +175,135 @@ reportsRouter.post('/week/:weekStart/finalize', requireAdmin, async (req, res) =
   const organizationId = requireOrganization(req);
   const weekStart = await normalizeWeekStart(organizationId, param);
 
-  const body = z.object({ reason: z.string().trim().min(3).optional() }).parse(req.body ?? {});
+  const body = z
+    .object({
+      reason: z.string().trim().min(3).optional(),
+      override_device_health: z.boolean().default(false),
+    })
+    .strict()
+    .superRefine((value, context) => {
+      if (value.override_device_health && !value.reason) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['reason'],
+          message: 'La razón es obligatoria para ignorar la salud de dispositivos',
+        });
+      }
+    })
+    .parse(req.body ?? {});
   const settings = await getSettings(organizationId);
-  const closed = await withTransaction(async (client) => {
-    const period = await lockPayPeriod(client, organizationId, weekStart, settings.timezone);
-    if (period.status === 'final') throw conflict('Esta semana ya está cerrada');
-    if (!canFinalizeWeek(period.week_end, new Date(), settings.timezone)) {
-      throw conflict('La semana todavía no termina en California', 'week_not_ended');
-    }
+  let closed: { id: string; version: number; snapshot_hash: string };
+  try {
+    closed = await withTransaction(async (client) => {
+      const period = await lockPayPeriod(client, organizationId, weekStart, settings.timezone);
+      if (period.status === 'final') throw conflict('Esta semana ya está cerrada');
+      if (!canFinalizeWeek(period.week_end, new Date(), settings.timezone)) {
+        throw conflict('La semana todavía no termina en California', 'week_not_ended');
+      }
 
-    // Every mutation obtains the same advisory lock, so this calculation and
-    // snapshot cannot race a foreman correction.
-    const computation = await computeWeek(organizationId, weekStart);
-    if (computation.anomaly_count > 0) {
-      throw conflict(
-        `No se puede cerrar: hay ${computation.anomaly_count} incidencia(s) bloqueante(s).`,
-        'anomalies_pending'
-      );
-    }
-    const version = period.current_version + 1;
-    const snapshot = hoursOnly(computation);
-    const hash = snapshotHash(snapshot);
-    const inserted = await client.query<{ id: string; finalized_at: Date }>(
-      `INSERT INTO report_versions
-         (organization_id, pay_period_id, version, snapshot, snapshot_hash,
-          finalized_by, finalization_reason)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)
-       RETURNING id, finalized_at`,
-      [
+      const deviceHealthBlockers = await finalizationDeviceHealthBlockers(
+        client,
         organizationId,
-        period.id,
-        version,
-        JSON.stringify(snapshot),
-        hash,
-        req.user!.id,
-        body.reason ?? null,
-      ]
-    );
-    await client.query(
-      `UPDATE pay_periods
-       SET status = 'final', current_version = $3,
-           finalized_at = $4, finalized_by = $5,
-           updated_at = now()
-       WHERE id = $1 AND organization_id = $2`,
-      [period.id, organizationId, version, inserted.rows[0]!.finalized_at, req.user!.id]
-    );
-    await recordAudit(
-      {
+        periodHeartbeatBoundary(period.week_end, settings.timezone)
+      );
+      if (deviceHealthBlockers.length && !body.override_device_health) {
+        throw conflict(
+          `No se puede cerrar: ${deviceHealthBlockers.length} checador(es) requieren atención`,
+          'device_health_blockers',
+          { devices: deviceHealthBlockers, pay_period_id: period.id }
+        );
+      }
+      if (deviceHealthBlockers.length) {
+        await recordAudit(
+          {
+            organizationId,
+            actorUserId: req.user!.id,
+            action: 'pay_period.device_health_overridden',
+            entityType: 'pay_period',
+            entityId: period.id,
+            reason: body.reason!,
+            metadata: { week_start: weekStart, devices: deviceHealthBlockers },
+          },
+          client
+        );
+      }
+
+      // Every mutation obtains the same advisory lock, so this calculation and
+      // snapshot cannot race a foreman correction.
+      const computation = await computeWeek(organizationId, weekStart);
+      if (computation.anomaly_count > 0) {
+        throw conflict(
+          `No se puede cerrar: hay ${computation.anomaly_count} incidencia(s) bloqueante(s).`,
+          'anomalies_pending'
+        );
+      }
+      const version = period.current_version + 1;
+      const snapshot = hoursOnly(computation);
+      const hash = snapshotHash(snapshot);
+      const inserted = await client.query<{ id: string; finalized_at: Date }>(
+        `INSERT INTO report_versions
+           (organization_id, pay_period_id, version, snapshot, snapshot_hash,
+            finalized_by, finalization_reason)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
+         RETURNING id, finalized_at`,
+        [
+          organizationId,
+          period.id,
+          version,
+          JSON.stringify(snapshot),
+          hash,
+          req.user!.id,
+          body.reason ?? null,
+        ]
+      );
+      await client.query(
+        `UPDATE pay_periods
+         SET status = 'final', current_version = $3,
+             finalized_at = $4, finalized_by = $5,
+             updated_at = now()
+         WHERE id = $1 AND organization_id = $2`,
+        [period.id, organizationId, version, inserted.rows[0]!.finalized_at, req.user!.id]
+      );
+      await recordAudit(
+        {
+          organizationId,
+          actorUserId: req.user!.id,
+          action: 'pay_period.finalized',
+          entityType: 'pay_period',
+          entityId: period.id,
+          reason: body.reason ?? null,
+          metadata: {
+            week_start: weekStart,
+            version,
+            snapshot_hash: hash,
+            override_device_health: body.override_device_health,
+            device_health_blockers: deviceHealthBlockers,
+          },
+        },
+        client
+      );
+      return { id: inserted.rows[0]!.id, version, snapshot_hash: hash };
+    });
+  } catch (error) {
+    if (
+      error instanceof HttpError &&
+      error.code === 'device_health_blockers'
+    ) {
+      const details = error.details as {
+        pay_period_id: string;
+        devices: DeviceHealthBlocker[];
+      };
+      await recordAudit({
         organizationId,
         actorUserId: req.user!.id,
-        action: 'pay_period.finalized',
+        action: 'pay_period.finalization_blocked_device_health',
         entityType: 'pay_period',
-        entityId: period.id,
-        reason: body.reason ?? null,
-        metadata: { week_start: weekStart, version, snapshot_hash: hash },
-      },
-      client
-    );
-    return { id: inserted.rows[0]!.id, version, snapshot_hash: hash };
-  });
+        entityId: details.pay_period_id,
+        metadata: { week_start: weekStart, devices: details.devices },
+      });
+    }
+    throw error;
+  }
   res.status(201).json({ ok: true, ...closed, week_start: weekStart });
 });
 

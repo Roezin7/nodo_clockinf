@@ -1,0 +1,19 @@
+{
+  "name": "NODO Clock-In",
+  "short_name": "Clock-In",
+  "description": "Checador presencial confiable para NODO",
+  "start_url": "/kiosk",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#111827",
+  "theme_color": "#111827",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

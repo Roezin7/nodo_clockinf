@@ -7,6 +7,11 @@ import { useAuth } from '../hooks/useAuth';
 import { fmtDateTime, fmtTime, todayLocal, useAppTimezone } from '../time';
 import { PageHeader } from '../components/layout/PageHeader';
 import {
+  canOverrideDeviceHealth,
+  parseDeviceHealthConflict,
+  type DeviceHealthConflict,
+} from '../reports/deviceHealth';
+import {
   Badge,
   Button,
   EmptyState,
@@ -57,6 +62,10 @@ export default function ReportsPage() {
   const [reopenReason, setReopenReason] = useState('');
   const [reopenError, setReopenError] = useState<string | null>(null);
   const [reopening, setReopening] = useState(false);
+  const [deviceHealthConflict, setDeviceHealthConflict] = useState<DeviceHealthConflict | null>(null);
+  const [overrideReason, setOverrideReason] = useState('');
+  const [overrideConfirmed, setOverrideConfirmed] = useState(false);
+  const [overrideError, setOverrideError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setError(null);
@@ -82,18 +91,39 @@ export default function ReportsPage() {
     void load();
   }, [load]);
 
-  async function finalize(): Promise<void> {
+  async function finalize(overrideDeviceHealth = false): Promise<void> {
     if (!report) return;
     setClosing(true);
     setError(null);
     try {
-      await api(`/api/reports/week/${report.week_start}/finalize`, { method: 'POST' });
+      await api(`/api/reports/week/${report.week_start}/finalize`, {
+        method: 'POST',
+        body: JSON.stringify(
+          overrideDeviceHealth
+            ? { override_device_health: true, reason: overrideReason.trim() }
+            : {}
+        ),
+      });
       setConfirming(false);
+      setDeviceHealthConflict(null);
+      setOverrideReason('');
+      setOverrideConfirmed(false);
+      setOverrideError(null);
       toast('Semana cerrada');
       await load();
     } catch (err) {
       setConfirming(false);
-      setError(err instanceof ApiError ? err.message : 'Error al cerrar la semana');
+      const healthConflict = parseDeviceHealthConflict(err);
+      if (healthConflict && isAdmin) {
+        setDeviceHealthConflict(healthConflict);
+        setOverrideReason('');
+        setOverrideConfirmed(false);
+        setOverrideError(null);
+      } else if (overrideDeviceHealth) {
+        setOverrideError(err instanceof ApiError ? err.message : 'Error al cerrar con excepción');
+      } else {
+        setError(err instanceof ApiError ? err.message : 'Error al cerrar la semana');
+      }
     } finally {
       setClosing(false);
     }
@@ -420,7 +450,7 @@ export default function ReportsPage() {
               <Button variant="secondary" onClick={() => setConfirming(false)}>
                 Cancelar
               </Button>
-              <Button variant="danger" loading={closing} onClick={() => void finalize()}>
+              <Button variant="danger" loading={closing} onClick={() => void finalize(false)}>
                 Cerrar semana
               </Button>
             </>
@@ -431,6 +461,80 @@ export default function ReportsPage() {
             con número de versión y hash. Si después se reabre la semana, este snapshot permanece intacto y el siguiente
             cierre generará una versión nueva.
           </p>
+        </Modal>
+      )}
+
+      {isAdmin && deviceHealthConflict && report && (
+        <Modal
+          title="Dispositivos con salud bloqueante"
+          size="md"
+          onClose={() => {
+            if (!closing) setDeviceHealthConflict(null);
+          }}
+          footer={
+            <>
+              <Button variant="secondary" disabled={closing} onClick={() => setDeviceHealthConflict(null)}>
+                Cancelar cierre
+              </Button>
+              <Button
+                variant="danger"
+                loading={closing}
+                disabled={!canOverrideDeviceHealth({ isAdmin, confirmed: overrideConfirmed, reason: overrideReason })}
+                onClick={() => void finalize(true)}
+              >
+                Cerrar con excepción
+              </Button>
+            </>
+          }
+        >
+          <p className="text-14 text-ink-secondary">{deviceHealthConflict.message}</p>
+          {deviceHealthConflict.devices.length > 0 ? (
+            <ul className="mt-4 space-y-3">
+              {deviceHealthConflict.devices.map((device) => (
+                <li key={device.id} className="rounded-control border border-warning/30 bg-warning-subtle p-3 text-13">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <p className="font-semibold text-ink">{device.plant_name} · {device.name}</p>
+                    <span className="text-warning">
+                      {device.pending_event_count} pendiente(s) · {device.rejected_event_count} rechazada(s)
+                    </span>
+                  </div>
+                  <ul className="mt-2 list-disc space-y-1 pl-5 text-ink-secondary">
+                    {device.reasons.map((reason) => <li key={reason}>{reason}</li>)}
+                  </ul>
+                  <p className="mt-2 text-12 text-ink-tertiary">
+                    Último heartbeat: {device.last_heartbeat_at ? fmtDateTime(device.last_heartbeat_at) : 'nunca'}
+                  </p>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="mt-3 rounded-control bg-warning-subtle p-3 text-13 text-warning">
+              El servidor no devolvió el desglose; revisa Configuración → Checadores antes de continuar.
+            </p>
+          )}
+
+          <div className="mt-5">
+            <Field label="Motivo de la excepción" required error={overrideError}>
+              <Textarea
+                rows={3}
+                value={overrideReason}
+                onChange={(event) => setOverrideReason(event.target.value)}
+                placeholder="Ej.: Se verificaron manualmente las checadas pendientes con el foreman"
+              />
+            </Field>
+            <label className="flex items-start gap-3 rounded-control border border-danger/30 bg-danger-subtle p-3 text-13 text-ink">
+              <input
+                type="checkbox"
+                checked={overrideConfirmed}
+                onChange={(event) => setOverrideConfirmed(event.target.checked)}
+                className="mt-0.5 h-4 w-4"
+              />
+              <span>
+                Confirmo que revisé estos dispositivos y entiendo que cerrar ahora puede dejar fuera checadas que aún no
+                se han sincronizado.
+              </span>
+            </label>
+          </div>
         </Modal>
       )}
 

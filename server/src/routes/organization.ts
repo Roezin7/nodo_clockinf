@@ -1,8 +1,8 @@
 import crypto from 'node:crypto';
 import { Router } from 'express';
 import { z } from 'zod';
-import { query, queryOne } from '../db.js';
-import { badRequest, notFound } from '../errors.js';
+import { query, queryOne, withTransaction } from '../db.js';
+import { badRequest, conflict, notFound } from '../errors.js';
 import {
   requireAdmin,
   requireAuth,
@@ -10,6 +10,7 @@ import {
   requireRole,
 } from '../middleware/auth.js';
 import { recordAudit } from '../services/auditService.js';
+import { deviceRevocationReasons } from '../services/deviceHealth.js';
 import { ALLOWED_TIMEZONE_IDS } from '../services/settingsService.js';
 import { accessiblePlantIds, assertPlantAccess } from '../services/tenantService.js';
 
@@ -123,6 +124,12 @@ plantsRouter.patch('/:id', requireAdmin, async (req, res) => {
 export const devicesRouter = Router();
 devicesRouter.use(requireAuth, requireRole('admin', 'foreman'));
 
+function databaseConstraint(error: unknown): string | undefined {
+  return error && typeof error === 'object'
+    ? (error as { constraint?: string }).constraint
+    : undefined;
+}
+
 devicesRouter.get('/', async (req, res) => {
   const organizationId = requireOrganization(req);
   const plantIds = await accessiblePlantIds(req.user!);
@@ -130,7 +137,10 @@ devicesRouter.get('/', async (req, res) => {
     await query(
       `SELECT d.id, d.organization_id, d.plant_id, p.name AS plant_name,
               d.name, d.public_id, d.active, d.last_seen_at, d.last_sync_at,
-              d.app_version, d.created_at
+              d.enrolled_at, d.last_heartbeat_at, d.pending_event_count,
+              d.rejected_event_count, d.app_version,
+              d.camera_status, d.storage_status, d.clock_skew_seconds,
+              d.last_error, d.created_at
        FROM devices d JOIN plants p ON p.id = d.plant_id
        WHERE d.organization_id = $1
          AND ($2::boolean OR d.plant_id = ANY($3::uuid[]))
@@ -148,39 +158,145 @@ devicesRouter.post('/', requireAdmin, async (req, res) => {
   await assertPlantAccess(req, body.plant_id);
   const token = crypto.randomBytes(32).toString('base64url');
   const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
-  const row = await queryOne<{ id: string }>(
-    `INSERT INTO devices (organization_id, plant_id, name, token_hash)
-     VALUES ($1, $2, $3, $4)
-     RETURNING id, organization_id, plant_id, name, public_id, active, created_at`,
-    [organizationId, body.plant_id, body.name, tokenHash]
-  );
-  await recordAudit({
-    organizationId,
-    actorUserId: req.user!.id,
-    action: 'device.created',
-    entityType: 'device',
-    entityId: row!.id,
-    metadata: { plant_id: body.plant_id, name: body.name },
+  let row: Record<string, unknown>;
+  try {
+    row = await withTransaction(async (client) => {
+      const inserted = await client.query(
+        `INSERT INTO devices (organization_id, plant_id, name, token_hash)
+         VALUES ($1, $2, $3, $4)
+         RETURNING id, organization_id, plant_id, name, public_id, active,
+                   enrolled_at, created_at`,
+        [organizationId, body.plant_id, body.name, tokenHash]
+      );
+      await recordAudit(
+        {
+          organizationId,
+          actorUserId: req.user!.id,
+          action: 'device.created',
+          entityType: 'device',
+          entityId: inserted.rows[0]!.id as string,
+          metadata: { plant_id: body.plant_id, name: body.name },
+        },
+        client
+      );
+      return inserted.rows[0] as Record<string, unknown>;
+    });
+  } catch (error) {
+    if (databaseConstraint(error) === 'devices_plant_id_name_key') {
+      throw conflict('Ya existe un dispositivo con ese nombre en la planta', 'device_name_conflict');
+    }
+    throw error;
+  }
+  res.status(201).json({ ...row, enrollment_token: token });
+});
+
+devicesRouter.post('/:id/reissue', requireAdmin, async (req, res) => {
+  const organizationId = requireOrganization(req);
+  const body = z.object({ reason: z.string().trim().min(3) }).strict().parse(req.body);
+  const token = crypto.randomBytes(32).toString('base64url');
+  const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
+  const row = await withTransaction(async (client) => {
+    const current = await client.query<{
+      id: string;
+      active: boolean;
+      enrolled_at: Date | null;
+      plant_id: string;
+      name: string;
+    }>(
+      `SELECT id, active, enrolled_at, plant_id, name
+       FROM devices
+       WHERE id = $1 AND organization_id = $2
+       FOR UPDATE`,
+      [req.params.id, organizationId]
+    );
+    const device = current.rows[0];
+    if (!device) throw notFound('Dispositivo no encontrado');
+    if (!device.active) throw conflict('El dispositivo está revocado', 'device_inactive');
+    if (device.enrolled_at) {
+      throw conflict(
+        'Un dispositivo enrolado debe revocarse; su credencial no puede reemitirse',
+        'device_already_enrolled'
+      );
+    }
+    const updated = await client.query(
+      `UPDATE devices SET token_hash = $2
+       WHERE id = $1
+       RETURNING id, organization_id, plant_id, name, public_id, active,
+                 enrolled_at, created_at`,
+      [device.id, tokenHash]
+    );
+    await recordAudit(
+      {
+        organizationId,
+        actorUserId: req.user!.id,
+        action: 'device.enrollment_reissued',
+        entityType: 'device',
+        entityId: device.id,
+        reason: body.reason,
+        metadata: { plant_id: device.plant_id, name: device.name },
+      },
+      client
+    );
+    return updated.rows[0] as Record<string, unknown>;
   });
   res.status(201).json({ ...row, enrollment_token: token });
 });
 
 devicesRouter.post('/:id/revoke', requireAdmin, async (req, res) => {
   const organizationId = requireOrganization(req);
-  const body = z.object({ reason: z.string().trim().min(3) }).parse(req.body);
-  const row = await queryOne<{ id: string }>(
-    `UPDATE devices SET active = false
-     WHERE id = $1 AND organization_id = $2 RETURNING id`,
-    [req.params.id, organizationId]
-  );
-  if (!row) throw notFound('Dispositivo no encontrado');
-  await recordAudit({
-    organizationId,
-    actorUserId: req.user!.id,
-    action: 'device.revoked',
-    entityType: 'device',
-    entityId: row.id,
-    reason: body.reason,
+  const body = z
+    .object({ reason: z.string().trim().min(3), force: z.boolean().default(false) })
+    .parse(req.body);
+  await withTransaction(async (client) => {
+    const result = await client.query<{
+      id: string;
+      enrolled_at: Date | null;
+      pending_event_count: number;
+      rejected_event_count: number;
+      last_heartbeat_at: Date | null;
+      storage_status: 'unknown' | 'ready' | 'degraded' | 'unavailable';
+    }>(
+      `SELECT id, enrolled_at, pending_event_count, rejected_event_count,
+              last_heartbeat_at, storage_status
+       FROM devices
+       WHERE id = $1 AND organization_id = $2
+       FOR UPDATE`,
+      [req.params.id, organizationId]
+    );
+    const device = result.rows[0];
+    if (!device) throw notFound('Dispositivo no encontrado');
+    const reasons = deviceRevocationReasons(device);
+    const health = {
+      enrolled: Boolean(device.enrolled_at),
+      pending_event_count: device.pending_event_count,
+      rejected_event_count: device.rejected_event_count,
+      last_heartbeat_at: device.last_heartbeat_at,
+      storage_status: device.storage_status,
+    };
+    if (reasons.length && !body.force) {
+      throw conflict(
+        'El dispositivo tiene estado local sin confirmar; resuelve los bloqueos o usa force',
+        'device_has_pending_events',
+        { reasons, health }
+      );
+    }
+    await client.query(`UPDATE devices SET active = false WHERE id = $1`, [device.id]);
+    await recordAudit(
+      {
+        organizationId,
+        actorUserId: req.user!.id,
+        action: 'device.revoked',
+        entityType: 'device',
+        entityId: device.id,
+        reason: body.reason,
+        metadata: {
+          force: body.force,
+          reasons,
+          health,
+        },
+      },
+      client
+    );
   });
   res.json({ ok: true });
 });

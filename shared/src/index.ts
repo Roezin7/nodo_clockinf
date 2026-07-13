@@ -39,11 +39,21 @@ export interface Device {
   name: string;
   public_id: string;
   active: boolean;
+  enrolled_at: string | null;
   last_seen_at: string | null;
   last_sync_at: string | null;
+  last_heartbeat_at: string | null;
+  pending_event_count: number;
+  rejected_event_count: number;
   app_version: string | null;
+  camera_status: DeviceComponentStatus;
+  storage_status: DeviceComponentStatus;
+  clock_skew_seconds: number | null;
+  last_error: string | null;
   created_at: string;
 }
+
+export type DeviceComponentStatus = 'unknown' | 'ready' | 'degraded' | 'unavailable';
 
 export interface EmployeeRate {
   id: string;
@@ -102,6 +112,8 @@ export interface Employee {
 export type PunchType = 'shift_in' | 'shift_out' | 'meal_out' | 'meal_in';
 export type PunchSource = 'kiosk' | 'manual';
 export type FaceCheckStatus = 'pending' | 'match' | 'mismatch' | 'review_ok' | 'skipped';
+export type PunchEvidenceStatus = 'pending' | 'captured' | 'camera_unavailable';
+export type DeviceEvidenceStatus = Exclude<PunchEvidenceStatus, 'pending'>;
 
 export interface Punch {
   id: string;
@@ -109,6 +121,7 @@ export interface Punch {
   plant_id: string | null;
   device_id: string | null;
   client_event_id: string | null;
+  client_installation_id: string | null;
   employee_id: string;
   punch_type: PunchType;
   punched_at: string; // ISO UTC
@@ -122,6 +135,8 @@ export interface Punch {
   correction_reason: string | null;
   voided: boolean;
   captured_at: string;
+  client_clock_skew_seconds: number | null;
+  evidence_status: PunchEvidenceStatus;
   received_at: string;
   offline: boolean;
   identity_status: 'verified' | 'identity_review' | 'review_approved' | 'review_rejected' | 'not_required';
@@ -131,18 +146,67 @@ export interface Punch {
 export interface PunchIngestRequest {
   employee_number: number;
   pin: string;
-  punch_type?: PunchType | null;
+  punch_type: PunchType;
   source: 'kiosk';
+  client_event_id: string;
+  client_installation_id: string;
+  captured_at: string;
+  client_sequence: number;
+  client_clock_skew_seconds: number | null;
+  evidence_status: DeviceEvidenceStatus;
 }
 
 export interface PunchIngestResponse {
   punch_id: string;
   employee_name: string;
+  punch_type: PunchType;
   punch_type_inferred: PunchType;
   punched_at: string;
   /** Hora local de planta ya formateada por el SERVIDOR (única fuente de verdad). */
   punched_at_local: string;
   timezone: string;
+  evidence_status: DeviceEvidenceStatus;
+  duplicate?: boolean;
+}
+
+export interface OfflinePunchEvent {
+  employee_number: number;
+  punch_type: PunchType;
+  client_event_id: string;
+  client_installation_id: string;
+  captured_at: string;
+  client_sequence: number;
+  client_clock_skew_seconds: number | null;
+  evidence_status: DeviceEvidenceStatus;
+}
+
+export type OfflinePunchSyncResult =
+  | {
+      client_event_id: string;
+      client_sequence: number;
+      status: 'accepted' | 'duplicate';
+      punch_id: string;
+      employee_name: string;
+      punch_type: PunchType;
+      punched_at: string;
+      punched_at_local: string;
+      timezone: string;
+      evidence_status: DeviceEvidenceStatus;
+    }
+  | {
+      client_event_id: string | null;
+      client_sequence: number | null;
+      status: 'rejected';
+      code: string;
+      error: string;
+    };
+
+export interface OfflinePunchSyncResponse {
+  results: OfflinePunchSyncResult[];
+  accepted: number;
+  duplicates: number;
+  rejected: number;
+  synced_at: string;
 }
 
 export type AnomalyType =
