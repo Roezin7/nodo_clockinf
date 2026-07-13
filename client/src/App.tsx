@@ -21,6 +21,7 @@ import { ToastProvider } from './components/ui';
 import LoginPage from './pages/LoginPage';
 import EmployeesPage from './pages/EmployeesPage';
 import KioskPage from './pages/KioskPage';
+import DemoKioskPage from './pages/DemoKioskPage';
 import DashboardPage from './pages/DashboardPage';
 import AttendancePage from './pages/AttendancePage';
 import ReportsPage from './pages/ReportsPage';
@@ -173,6 +174,7 @@ export default function App() {
       <Routes>
         <Route path="/login" element={<LoginPage />} />
         <Route path="/kiosk" element={<KioskPage />} />
+        <Route path="/demo/kiosk" element={<DemoKioskPage />} />
         <Route path="/" element={<RoleHome />} />
         <Route path="/dashboard" element={<RoleGuard route="/dashboard"><Shell><DashboardPage /></Shell></RoleGuard>} />
         <Route path="/employees" element={<RoleGuard route="/employees"><Shell><EmployeesPage /></Shell></RoleGuard>} />

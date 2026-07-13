@@ -22,6 +22,7 @@ import { identityReviewsRouter, kioskIdentityRouter } from './routes/identity.js
 import { operationalExceptionsRouter } from './routes/operationalExceptions.js';
 import { notificationsRouter } from './routes/notifications.js';
 import { dashboardRouter } from './routes/dashboard.js';
+import { demoKioskRouter } from './routes/demoKiosk.js';
 import { storageIsLocal, LOCAL_DIR, verifyLocalPhotoSignature } from './storage.js';
 import { storage } from './storage.js';
 import { pool } from './db.js';
@@ -128,6 +129,7 @@ export function createApp(): express.Express {
   app.use('/api/devices', devicesRouter);
   app.use('/api/manual-time', manualTimeRouter);
   app.use('/api/dashboard', dashboardRouter);
+  app.use('/api/demo-kiosk', rateLimit({ windowMs: 60_000, limit: 60, standardHeaders: true, legacyHeaders: false }), demoKioskRouter);
 
   // Solo dev: sirve las fotos guardadas en disco local (sin R2 configurado)
   if (storageIsLocal) {

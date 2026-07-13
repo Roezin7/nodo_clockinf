@@ -27,6 +27,8 @@ Una sola app (Dockerfile en la raíz: API + cliente estático) + una Postgres lo
 | `FACE_PROVIDER` | `review_only` para el arranque seguro; `aws_rekognition` sólo habilita comparación 1:1 y no equivale a prueba de vida |
 | `VAPID_SUBJECT` / `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` | (opcional) las tres salidas de una identidad generada con `npx web-push generate-vapid-keys`; dejar las tres ausentes desactiva sólo Web Push |
 | `CORS_ORIGINS` | vacío en producción mismo-origen; en desarrollo, p. ej. `http://localhost:5173` |
+| `DEMO_KIOSK_TOKEN` | opcional, `openssl rand -hex 32`; protege el kiosco de pruebas con empleados reales sin afectar horas pagables |
+| `DEMO_KIOSK_ORGANIZATION_SLUG` | slug de la organización que se demostrará, p. ej. `modesto-packing` |
 
 ### Fotos
 
@@ -39,6 +41,16 @@ Web Push requiere HTTPS y las tres variables `VAPID_*`. La bandeja dentro de
 la aplicación funciona aunque Web Push esté desactivado. Después del deploy,
 activa los avisos desde un gesto explícito en la campana y valida entrega en
 los teléfonos reales del admin y los foremen.
+
+### Kiosco de pruebas
+
+Con ambas variables `DEMO_KIOSK_*` configuradas, comparte sólo con el dueño un
+enlace de este formato: `https://tu-dominio/demo/kiosk#demo=<DEMO_KIOSK_TOKEN>`.
+El fragmento no se envía al servidor ni queda en logs; el navegador lo convierte
+en header. El kiosco usa números de empleados activos, pero guarda sus eventos
+en una tabla aislada: no hay horas pagables, reportes, dashboard ni fotos
+biométricas productivas. Para revocar el enlace, cambia `DEMO_KIOSK_TOKEN` y
+redeploya.
 
 ## 3. Primer deploy
 
