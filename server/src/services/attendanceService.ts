@@ -14,6 +14,7 @@ import type {
   DayDetailRow,
   ManualTimeEntry,
   PunchType,
+  TimecardIssue,
   WeekEmployeeCalc,
 } from '../types.js';
 
@@ -176,13 +177,24 @@ export async function dayDetail(
       punch_area: string | null;
       plant_id: string;
       plant_name: string;
+      created_by_name: string | null;
+      voided_by_name: string | null;
+      void_reason: string | null;
+      correction_of: string | null;
+      created_at: Date;
     }>(
       `SELECT p.id, p.employee_id, p.punch_type, p.punched_at, p.source, p.voided,
-              p.correction_reason, a.name AS punch_area, p.plant_id, pl.name AS plant_name,
+              p.correction_reason, p.correction_of, p.created_at,
+              a.name AS punch_area, p.plant_id, pl.name AS plant_name,
+              creator.name AS created_by_name, voider.name AS voided_by_name,
+              pv.reason AS void_reason,
               (p.punched_at AT TIME ZONE $2)::date::text AS work_date
        FROM punches p
        LEFT JOIN areas a ON a.id = p.area_id
        JOIN plants pl ON pl.id = p.plant_id
+       LEFT JOIN users creator ON creator.id = p.created_by
+       LEFT JOIN punch_voids pv ON pv.punch_id = p.id
+       LEFT JOIN users voider ON voider.id = pv.voided_by
        WHERE p.organization_id = $3
          AND ($4::uuid[] IS NULL OR p.plant_id = ANY($4::uuid[]))
          AND (p.punched_at AT TIME ZONE $2)::date = $1::date
@@ -274,6 +286,11 @@ export async function dayDetail(
         area_name: p.punch_area,
         plant_id: p.plant_id,
         plant_name: p.plant_name,
+        created_by_name: p.created_by_name,
+        created_at: p.created_at.toISOString(),
+        correction_of: p.correction_of,
+        voided_by_name: p.voided_by_name,
+        void_reason: p.void_reason,
       })),
     });
   }
@@ -288,6 +305,7 @@ export interface WeekComputation {
   policy: 'CA_STANDARD_8_40';
   employees: WeekEmployeeCalc[];
   anomaly_count: number;
+  issues: TimecardIssue[];
 }
 
 /** Cálculo semanal exacto bajo la política inmutable CA_STANDARD_8_40. */
@@ -352,6 +370,7 @@ export async function computeWeek(
 
   const result: WeekEmployeeCalc[] = [];
   let anomalyCount = 0;
+  const timecardIssues: TimecardIssue[] = [];
 
   for (const employeeId of relevant) {
     const emp = employees.get(employeeId);
@@ -404,6 +423,20 @@ export async function computeWeek(
       issueTouchesWeek(issue, weekStart, weekEnd, settings.timezone)
     );
     anomalyCount += relevantIssues.length;
+    timecardIssues.push(
+      ...relevantIssues.map((issue) => ({
+        employee_id: employeeId,
+        employee_number: emp.employee_number,
+        full_name: emp.full_name,
+        type: issue.type,
+        detail: issue.detail,
+        punch_ids: issue.relatedPunchIds,
+        plant_ids: issue.plantIds,
+        start: issue.start,
+        end: issue.end,
+        blocking: true as const,
+      }))
+    );
 
     const days: DayCalc[] = classification.days
       .filter((day) => day.totalWorkedSeconds > 0 || legacyDays.has(day.workDate))
@@ -468,5 +501,6 @@ export async function computeWeek(
     policy: 'CA_STANDARD_8_40',
     employees: result,
     anomaly_count: anomalyCount,
+    issues: timecardIssues,
   };
 }

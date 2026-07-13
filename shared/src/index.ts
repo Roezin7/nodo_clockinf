@@ -188,6 +188,11 @@ export interface DayDetailPunch {
   area_name: string | null;
   plant_id: string;
   plant_name: string;
+  created_by_name: string | null;
+  created_at: string;
+  correction_of: string | null;
+  voided_by_name: string | null;
+  void_reason: string | null;
 }
 
 export interface ManualTimeEntry {
@@ -252,10 +257,36 @@ export interface WeekReport {
   week_end: string;
   employees: WeekEmployeeCalc[];
   anomaly_count: number;
-  status: 'draft' | 'final';
+  status: 'draft' | 'open' | 'final' | 'reopened';
   policy: 'CA_STANDARD_8_40';
+  version?: number;
+  snapshot_hash?: string;
+  issues?: TimecardIssue[];
   finalized_at?: string;
   finalized_by?: string;
+}
+
+export interface TimecardIssue {
+  employee_id: string;
+  employee_number: number;
+  full_name: string;
+  type: 'missing_shift_out' | 'missing_meal_in' | 'out_of_sequence' | 'overlap_between_plants';
+  detail: string;
+  punch_ids: string[];
+  plant_ids: string[];
+  start: string | null;
+  end: string | null;
+  blocking: true;
+}
+
+export interface ReportVersionSummary {
+  id: string;
+  version: number;
+  snapshot_hash: string;
+  finalized_at: string;
+  finalized_by: string;
+  finalized_by_name: string;
+  finalization_reason: string | null;
 }
 
 export interface Settings {

@@ -1,14 +1,16 @@
 import { Fragment, useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { ChevronLeft, ChevronRight, FileSpreadsheet } from 'lucide-react';
-import type { WeekReport } from '@clockai/shared';
+import type { ReportVersionSummary, WeekReport } from '@clockai/shared';
 import { api, ApiError, getStoredAuth } from '../api';
 import { useAuth } from '../hooks/useAuth';
-import { fmtTime, todayLocal, useAppTimezone } from '../time';
+import { fmtDateTime, fmtTime, todayLocal, useAppTimezone } from '../time';
 import { PageHeader } from '../components/layout/PageHeader';
 import {
+  Badge,
   Button,
   EmptyState,
+  Field,
   Modal,
   StatusBadge,
   Table,
@@ -17,6 +19,7 @@ import {
   TFootRow,
   TH,
   THead,
+  Textarea,
   TRow,
   useToast,
 } from '../components/ui';
@@ -29,6 +32,14 @@ function addDays(date: string, days: number): string {
 
 const fmtHours = (min: number): string => (min / 60).toFixed(2);
 const fmtSeconds = (seconds: number): string => (seconds / 3600).toFixed(2);
+const shortHash = (hash: string | undefined): string => (hash ? hash.slice(0, 12) : '—');
+
+function ReportStatus({ status }: { status: WeekReport['status'] }) {
+  if (status === 'final') return <StatusBadge status="cerrada" />;
+  if (status === 'reopened') return <Badge tone="warning">Reabierta</Badge>;
+  if (status === 'open') return <Badge tone="info">Abierta</Badge>;
+  return <StatusBadge status="borrador" />;
+}
 
 export default function ReportsPage() {
   useAppTimezone(); // re-render si cambia la zona de la planta
@@ -37,15 +48,29 @@ export default function ReportsPage() {
   const isAdmin = user?.role === 'admin';
   const [anchor, setAnchor] = useState(todayLocal());
   const [report, setReport] = useState<WeekReport | null>(null);
+  const [versions, setVersions] = useState<ReportVersionSummary[] | null>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [confirming, setConfirming] = useState(false);
   const [closing, setClosing] = useState(false);
+  const [reopenModal, setReopenModal] = useState(false);
+  const [reopenReason, setReopenReason] = useState('');
+  const [reopenError, setReopenError] = useState<string | null>(null);
+  const [reopening, setReopening] = useState(false);
 
   const load = useCallback(async () => {
     setError(null);
     try {
-      setReport(await api<WeekReport>(`/api/reports/week/${anchor}`));
+      const nextReport = await api<WeekReport>(`/api/reports/week/${anchor}`);
+      setReport(nextReport);
+      try {
+        setVersions(
+          await api<ReportVersionSummary[]>(`/api/reports/week/${nextReport.week_start}/versions`)
+        );
+      } catch (err) {
+        setVersions([]);
+        setError(err instanceof ApiError ? `Reporte cargado, pero no se pudo cargar el historial: ${err.message}` : 'No se pudo cargar el historial de versiones');
+      }
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Error al cargar');
     }
@@ -53,6 +78,7 @@ export default function ReportsPage() {
 
   useEffect(() => {
     setReport(null);
+    setVersions(null);
     void load();
   }, [load]);
 
@@ -70,6 +96,26 @@ export default function ReportsPage() {
       setError(err instanceof ApiError ? err.message : 'Error al cerrar la semana');
     } finally {
       setClosing(false);
+    }
+  }
+
+  async function reopen(): Promise<void> {
+    if (!report || report.status !== 'final') return;
+    setReopening(true);
+    setReopenError(null);
+    try {
+      await api(`/api/reports/week/${report.week_start}/reopen`, {
+        method: 'POST',
+        body: JSON.stringify({ reason: reopenReason }),
+      });
+      setReopenModal(false);
+      setReopenReason('');
+      toast('Semana reabierta');
+      await load();
+    } catch (err) {
+      setReopenError(err instanceof ApiError ? err.message : 'Error al reabrir la semana');
+    } finally {
+      setReopening(false);
     }
   }
 
@@ -105,12 +151,19 @@ export default function ReportsPage() {
     }),
     { days: 0, regular: 0, ot: 0, double: 0, manual: 0, total: 0 }
   );
+  const latestVersion = versions?.[0];
+  const displayedVersion = report?.version ?? latestVersion?.version;
+  const displayedHash = report?.snapshot_hash ?? latestVersion?.snapshot_hash;
+  const canFinalize =
+    isAdmin &&
+    report !== null &&
+    (report.status === 'open' || report.status === 'reopened' || report.status === 'draft');
 
   return (
     <div>
       <PageHeader
         title="Reporte semanal"
-        meta={report && <StatusBadge status={report.status === 'final' ? 'cerrada' : 'borrador'} />}
+        meta={report && <ReportStatus status={report.status} />}
         actions={
           <>
             <div className="flex items-center gap-1">
@@ -143,7 +196,7 @@ export default function ReportsPage() {
             <Button variant="secondary" size="sm" onClick={() => void download('csv', 'detail')}>
               CSV detalle
             </Button>
-            {isAdmin && report?.status !== 'final' && (
+            {canFinalize && (
               <Button
                 variant="danger"
                 size="sm"
@@ -152,6 +205,19 @@ export default function ReportsPage() {
                 onClick={() => setConfirming(true)}
               >
                 Cerrar semana
+              </Button>
+            )}
+            {isAdmin && report?.status === 'final' && (
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => {
+                  setReopenReason('');
+                  setReopenError(null);
+                  setReopenModal(true);
+                }}
+              >
+                Reabrir semana
               </Button>
             )}
           </>
@@ -165,13 +231,79 @@ export default function ReportsPage() {
       )}
 
       {report && report.anomaly_count > 0 && report.status !== 'final' && (
-        <p className="mb-4 rounded-control bg-warning-subtle px-4 py-3 text-13 font-medium text-warning">
-          {report.anomaly_count} anomalía(s) sin resolver — la semana no puede cerrarse hasta corregirlas en{' '}
-          <Link to="/attendance" className="underline">
-            Asistencia
-          </Link>
-          .
-        </p>
+        <div className="mb-4 rounded-control bg-warning-subtle px-4 py-3 text-13 text-warning">
+          <p className="font-medium">
+            {report.anomaly_count} anomalía(s) sin resolver — la semana no puede cerrarse hasta corregirlas en{' '}
+            <Link to="/attendance" className="underline">
+              Asistencia
+            </Link>
+            .
+          </p>
+          {report.issues && report.issues.length > 0 && (
+            <ul className="mt-2 list-disc space-y-1 pl-5">
+              {report.issues.slice(0, 8).map((issue, index) => (
+                <li key={`${issue.employee_id}-${issue.type}-${index}`}>
+                  <span className="font-semibold">#{issue.employee_number} {issue.full_name}:</span>{' '}
+                  {issue.detail}
+                </li>
+              ))}
+              {report.issues.length > 8 && <li>y {report.issues.length - 8} incidencia(s) más…</li>}
+            </ul>
+          )}
+        </div>
+      )}
+
+      {report && (
+        <section className="mb-4 rounded-card border border-line bg-raised px-5 py-4 shadow-card">
+          <div className="flex flex-wrap items-start justify-between gap-4">
+            <div>
+              <p className="text-12 font-semibold uppercase tracking-wide text-ink-tertiary">
+                {report.status === 'final' ? 'Snapshot actual' : 'Último snapshot final'}
+              </p>
+              <p className="mt-1 text-14 font-semibold text-ink">
+                {displayedVersion ? `Versión ${displayedVersion}` : 'Aún no existe una versión final'}
+              </p>
+              <p className="tnum mt-1 text-12 text-ink-secondary" title={displayedHash}>
+                Hash: <code>{shortHash(displayedHash)}</code>
+              </p>
+            </div>
+            <p className="max-w-xl text-13 leading-relaxed text-ink-secondary">
+              Cada cierre crea un snapshot inmutable con su propio hash. Reabrir permite preparar una versión nueva,
+              pero nunca modifica ni elimina las versiones que la contadora ya pudo consultar.
+            </p>
+          </div>
+
+          <div className="mt-4 border-t border-line pt-3">
+            <p className="mb-2 text-12 font-semibold uppercase tracking-wide text-ink-secondary">
+              Historial de versiones
+            </p>
+            {versions === null ? (
+              <p className="text-13 text-ink-tertiary">Cargando historial…</p>
+            ) : versions.length === 0 ? (
+              <p className="text-13 text-ink-tertiary">Esta semana todavía no tiene snapshots finales.</p>
+            ) : (
+              <div className="grid gap-2">
+                {versions.map((version) => (
+                  <div
+                    key={version.id}
+                    className="flex flex-wrap items-center justify-between gap-x-5 gap-y-1 rounded-control bg-sunken px-3 py-2 text-13"
+                  >
+                    <span className="font-semibold text-ink">Versión {version.version}</span>
+                    <span className="text-ink-secondary">
+                      {fmtDateTime(version.finalized_at)} · {version.finalized_by_name}
+                    </span>
+                    <code className="tnum text-12 text-ink-tertiary" title={version.snapshot_hash}>
+                      {shortHash(version.snapshot_hash)}
+                    </code>
+                    {version.finalization_reason && (
+                      <span className="w-full text-12 text-ink-tertiary">Motivo: {version.finalization_reason}</span>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </section>
       )}
 
       {!report ? (
@@ -295,10 +427,47 @@ export default function ReportsPage() {
           }
         >
           <p className="text-14 text-ink-secondary">
-            Al cerrar, el cálculo queda <span className="font-semibold text-ink">congelado como snapshot final</span>{' '}
-            para el contador y la semana ya no puede volver a cerrarse ni editarse. Las checadas siguen intactas en el
-            log, pero este reporte queda fijo.
+            Al cerrar, el cálculo queda <span className="font-semibold text-ink">congelado como un snapshot final</span>{' '}
+            con número de versión y hash. Si después se reabre la semana, este snapshot permanece intacto y el siguiente
+            cierre generará una versión nueva.
           </p>
+        </Modal>
+      )}
+
+      {reopenModal && report?.status === 'final' && (
+        <Modal
+          title={`Reabrir semana ${report.week_start} — ${report.week_end}`}
+          size="sm"
+          onClose={() => setReopenModal(false)}
+          footer={
+            <>
+              <Button variant="secondary" onClick={() => setReopenModal(false)}>
+                Cancelar
+              </Button>
+              <Button
+                variant="danger"
+                loading={reopening}
+                disabled={reopenReason.trim().length < 3}
+                onClick={() => void reopen()}
+              >
+                Reabrir semana
+              </Button>
+            </>
+          }
+        >
+          <p className="mb-4 text-14 text-ink-secondary">
+            La versión {displayedVersion ?? 'actual'} seguirá disponible como snapshot inmutable. Los cambios posteriores
+            se incluirán únicamente cuando el admin vuelva a cerrar la semana y genere otra versión.
+          </p>
+          <Field label="Motivo de reapertura" required error={reopenError}>
+            <Textarea
+              rows={3}
+              value={reopenReason}
+              onChange={(event) => setReopenReason(event.target.value)}
+              placeholder="Ej.: Se recibió una corrección de horas después del cierre"
+              autoFocus
+            />
+          </Field>
         </Modal>
       )}
     </div>

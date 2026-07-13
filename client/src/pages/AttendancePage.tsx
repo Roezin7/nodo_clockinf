@@ -125,7 +125,11 @@ export default function AttendancePage() {
                     {row.punches.map((p) => (
                       <span
                         key={p.id}
-                        title={p.correction_reason ?? undefined}
+                        title={[
+                          p.source === 'manual' ? `Agregada por ${p.created_by_name ?? 'usuario'}` : null,
+                          p.correction_reason,
+                          p.void_reason ? `Anulada por ${p.voided_by_name ?? 'usuario'}: ${p.void_reason}` : null,
+                        ].filter(Boolean).join(' · ') || undefined}
                         className={`tnum inline-flex items-center rounded-control border px-1.5 py-0.5 text-12 font-medium ${
                           p.voided
                             ? 'border-line text-ink-tertiary line-through'

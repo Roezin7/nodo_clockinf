@@ -5,6 +5,8 @@ import { badRequest, conflict, notFound } from '../errors.js';
 import { requireAuth, requireOrganization, requireRole } from '../middleware/auth.js';
 import { recordAudit } from '../services/auditService.js';
 import { accessiblePlantIds, assertPlantAccess } from '../services/tenantService.js';
+import { ensurePeriodOpen } from '../services/payPeriodService.js';
+import { getSettings } from '../services/settingsService.js';
 
 export const manualTimeRouter = Router();
 manualTimeRouter.use(requireAuth, requireRole('admin', 'foreman'));
@@ -87,6 +89,8 @@ manualTimeRouter.post('/', async (req, res) => {
   if (!employee) throw notFound('Empleado activo no encontrado');
 
   const row = await withTransaction(async (client) => {
+    const settings = await getSettings(organizationId);
+    await ensurePeriodOpen(client, organizationId, body.work_date, settings.timezone);
     const inserted = await client.query<{ id: string }>(
       `INSERT INTO manual_time_entries
          (organization_id, employee_id, plant_id, work_date, duration_seconds, reason, created_by)
@@ -129,22 +133,26 @@ manualTimeRouter.post('/', async (req, res) => {
 manualTimeRouter.post('/:id/void', async (req, res) => {
   const organizationId = requireOrganization(req);
   const body = z.object({ reason: z.string().trim().min(3) }).parse(req.body);
-  const entry = await queryOne<{ id: string; plant_id: string; voided_at: Date | null }>(
-    `SELECT id, plant_id, voided_at FROM manual_time_entries
+  const entry = await queryOne<{ id: string; plant_id: string; work_date: string; voided_at: Date | null }>(
+    `SELECT id, plant_id, work_date, voided_at FROM manual_time_entries
      WHERE id = $1 AND organization_id = $2`,
     [req.params.id, organizationId]
   );
   if (!entry) throw notFound('Horas manuales no encontradas');
   await assertPlantAccess(req, entry.plant_id);
   if (entry.voided_at) throw conflict('Estas horas manuales ya fueron anuladas');
+  const settings = await getSettings(organizationId);
 
   await withTransaction(async (client) => {
-    await client.query(
+    await ensurePeriodOpen(client, organizationId, entry.work_date, settings.timezone);
+    const updated = await client.query(
       `UPDATE manual_time_entries
        SET voided_at = now(), voided_by = $3, void_reason = $4
-       WHERE id = $1 AND organization_id = $2 AND voided_at IS NULL`,
+       WHERE id = $1 AND organization_id = $2 AND voided_at IS NULL
+       RETURNING id`,
       [entry.id, organizationId, req.user!.id, body.reason]
     );
+    if (updated.rowCount === 0) throw conflict('Estas horas manuales ya fueron anuladas');
     await recordAudit(
       {
         organizationId,

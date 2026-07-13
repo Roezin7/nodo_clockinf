@@ -22,6 +22,8 @@ import {
   getDefaultOrganizationId,
   getDefaultPlantId,
 } from '../services/tenantService.js';
+import { recordAudit } from '../services/auditService.js';
+import { ensurePeriodOpen } from '../services/payPeriodService.js';
 
 export const punchesRouter = Router();
 
@@ -222,15 +224,26 @@ punchesRouter.post('/manual', requireAuth, requireRole('admin', 'foreman'), asyn
   if (!employee) throw notFound('Empleado no encontrado');
 
   const created = await withTransaction(async (client) => {
+    const workDate = workDateOf(punchedAt, settings.timezone);
+    await ensurePeriodOpen(client, organizationId, workDate, settings.timezone);
     if (body.correction_of) {
-      const orig = await client.query<{ id: string; voided: boolean; employee_id: string; plant_id: string | null }>(
-        `SELECT id, voided, employee_id, plant_id FROM punches
+      const orig = await client.query<{
+        id: string;
+        voided: boolean;
+        employee_id: string;
+        plant_id: string | null;
+        punched_at: Date;
+      }>(
+        `SELECT id, voided, employee_id, plant_id, punched_at FROM punches
          WHERE id = $1 AND organization_id = $2 FOR UPDATE`,
         [body.correction_of, organizationId]
       );
       if (!orig.rows[0]) throw notFound('Checada a corregir no encontrada');
       if (orig.rows[0].employee_id !== body.employee_id || orig.rows[0].plant_id !== body.plant_id) {
         throw badRequest('La corrección debe conservar empleado y planta');
+      }
+      if (workDateOf(orig.rows[0].punched_at, settings.timezone) !== workDate) {
+        throw badRequest('La corrección debe permanecer en el mismo día de trabajo');
       }
       if (!orig.rows[0].voided) {
         await client.query(
@@ -239,6 +252,17 @@ punchesRouter.post('/manual', requireAuth, requireRole('admin', 'foreman'), asyn
           [organizationId, body.correction_of, userId, body.reason]
         );
         await client.query(`UPDATE punches SET voided = true WHERE id = $1`, [body.correction_of]);
+        await recordAudit(
+          {
+            organizationId,
+            actorUserId: userId,
+            action: 'punch.voided_for_correction',
+            entityType: 'punch',
+            entityId: body.correction_of,
+            reason: body.reason,
+          },
+          client
+        );
       }
     }
     const inserted = await client.query(
@@ -252,6 +276,22 @@ punchesRouter.post('/manual', requireAuth, requireRole('admin', 'foreman'), asyn
         body.area_id ?? null, userId, body.correction_of ?? null, body.reason,
       ]
     );
+    await recordAudit(
+      {
+        organizationId,
+        actorUserId: userId,
+        action: 'punch.manual_created',
+        entityType: 'punch',
+        entityId: inserted.rows[0].id as string,
+        reason: body.reason,
+        metadata: {
+          employee_id: body.employee_id,
+          plant_id: body.plant_id,
+          correction_of: body.correction_of ?? null,
+        },
+      },
+      client
+    );
     return inserted.rows[0] as Record<string, unknown>;
   });
 
@@ -263,13 +303,20 @@ punchesRouter.post('/:id/void', requireAuth, requireRole('admin', 'foreman'), as
   const body = z.object({ reason: z.string().trim().min(3, 'La razón es obligatoria') }).parse(req.body);
   const userId = req.user!.id;
   const organizationId = requireOrganization(req);
+  const settings = await getSettings(organizationId);
   await withTransaction(async (client) => {
-    const orig = await client.query<{ id: string; voided: boolean; plant_id: string | null }>(
-      `SELECT id, voided, plant_id FROM punches
+    const orig = await client.query<{ id: string; voided: boolean; plant_id: string | null; punched_at: Date }>(
+      `SELECT id, voided, plant_id, punched_at FROM punches
        WHERE id = $1 AND organization_id = $2 FOR UPDATE`,
       [req.params.id, organizationId]
     );
     if (!orig.rows[0]) throw notFound('Checada no encontrada');
+    await ensurePeriodOpen(
+      client,
+      organizationId,
+      workDateOf(orig.rows[0].punched_at, settings.timezone),
+      settings.timezone
+    );
     if (!orig.rows[0].plant_id) throw badRequest('La checada histórica no tiene planta asignada');
     await assertPlantAccess(req, orig.rows[0].plant_id);
     if (orig.rows[0].voided) throw conflict('La checada ya está anulada');
@@ -279,6 +326,17 @@ punchesRouter.post('/:id/void', requireAuth, requireRole('admin', 'foreman'), as
       [organizationId, req.params.id, userId, body.reason]
     );
     await client.query(`UPDATE punches SET voided = true WHERE id = $1`, [req.params.id]);
+    await recordAudit(
+      {
+        organizationId,
+        actorUserId: userId,
+        action: 'punch.voided',
+        entityType: 'punch',
+        entityId: String(req.params.id),
+        reason: body.reason,
+      },
+      client
+    );
   });
   res.json({ ok: true });
 });

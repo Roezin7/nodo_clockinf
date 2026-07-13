@@ -2,8 +2,8 @@ import { Router } from 'express';
 import { DateTime } from 'luxon';
 import ExcelJS from 'exceljs';
 import { z } from 'zod';
-import { query, queryOne } from '../db.js';
-import { badRequest, conflict } from '../errors.js';
+import { query, queryOne, withTransaction } from '../db.js';
+import { badRequest, conflict, notFound } from '../errors.js';
 import {
   requireAuth,
   requireAdmin,
@@ -13,6 +13,14 @@ import {
 import { computeWeek, type WeekComputation } from '../services/attendanceService.js';
 import { getSettings } from '../services/settingsService.js';
 import type { WeekEmployeeCalc } from '../types.js';
+import {
+  canFinalizeWeek,
+  lockPayPeriod,
+  snapshotHash,
+  weekBoundsForDate,
+  type PayPeriodStatus,
+} from '../services/payPeriodService.js';
+import { recordAudit } from '../services/auditService.js';
 
 export const reportsRouter = Router();
 reportsRouter.use(requireAuth, requireRole('admin', 'accountant'));
@@ -22,26 +30,31 @@ const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 /** Normaliza cualquier fecha al inicio de su semana según settings.week_start_day. */
 async function normalizeWeekStart(organizationId: string, date: string): Promise<string> {
   const settings = await getSettings(organizationId);
-  const d = DateTime.fromISO(date, { zone: settings.timezone });
-  const diff = (d.weekday - settings.week_start_day + 7) % 7;
-  return d.minus({ days: diff }).toISODate()!;
+  return weekBoundsForDate(date, settings.timezone).weekStart;
 }
 
-interface FinalReportRow {
+interface PeriodReportRow {
   id: string;
   week_start: string;
   week_end: string;
-  generated_at: Date;
-  status: string;
-  data: WeekComputation;
-  generated_by_name: string;
+  status: PayPeriodStatus;
+  current_version: number;
+  snapshot: WeekComputation | null;
+  snapshot_hash: string | null;
+  finalized_at: Date | null;
+  finalized_by_name: string | null;
 }
 
-async function getFinalReport(organizationId: string, weekStart: string): Promise<FinalReportRow | null> {
-  return queryOne<FinalReportRow>(
-    `SELECT w.*, u.name AS generated_by_name
-     FROM weekly_reports w JOIN users u ON u.id = w.generated_by
-     WHERE w.organization_id = $1 AND w.week_start = $2::date AND w.status = 'final'`,
+async function getPeriodReport(organizationId: string, weekStart: string): Promise<PeriodReportRow | null> {
+  return queryOne<PeriodReportRow>(
+    `SELECT p.id, p.week_start, p.week_end, p.status, p.current_version,
+            rv.snapshot, rv.snapshot_hash, rv.finalized_at,
+            u.name AS finalized_by_name
+     FROM pay_periods p
+     LEFT JOIN report_versions rv
+       ON rv.pay_period_id = p.id AND rv.version = p.current_version
+     LEFT JOIN users u ON u.id = rv.finalized_by
+     WHERE p.organization_id = $1 AND p.week_start = $2::date`,
     [organizationId, weekStart]
   );
 }
@@ -88,18 +101,24 @@ reportsRouter.get('/week/:weekStart', async (req, res) => {
   const organizationId = requireOrganization(req);
   const weekStart = await normalizeWeekStart(organizationId, req.params.weekStart);
 
-  const final = await getFinalReport(organizationId, weekStart);
-  if (final) {
+  const period = await getPeriodReport(organizationId, weekStart);
+  if (period?.status === 'final' && period.snapshot) {
     res.json({
-      ...hoursOnly(final.data),
+      ...hoursOnly(period.snapshot),
       status: 'final',
-      finalized_at: final.generated_at,
-      finalized_by: final.generated_by_name,
+      version: period.current_version,
+      snapshot_hash: period.snapshot_hash,
+      finalized_at: period.finalized_at,
+      finalized_by: period.finalized_by_name,
     });
     return;
   }
   const computation = await computeWeek(organizationId, weekStart);
-  res.json({ ...hoursOnly(computation), status: 'draft' });
+  res.json({
+    ...hoursOnly(computation),
+    status: period?.status ?? 'open',
+    version: period?.current_version ?? 0,
+  });
 });
 
 /**
@@ -112,32 +131,165 @@ reportsRouter.post('/week/:weekStart/finalize', requireAdmin, async (req, res) =
   const organizationId = requireOrganization(req);
   const weekStart = await normalizeWeekStart(organizationId, param);
 
-  if (await getFinalReport(organizationId, weekStart)) throw conflict('Esta semana ya está cerrada');
+  const body = z.object({ reason: z.string().trim().min(3).optional() }).parse(req.body ?? {});
+  const settings = await getSettings(organizationId);
+  const closed = await withTransaction(async (client) => {
+    const period = await lockPayPeriod(client, organizationId, weekStart, settings.timezone);
+    if (period.status === 'final') throw conflict('Esta semana ya está cerrada');
+    if (!canFinalizeWeek(period.week_end, new Date(), settings.timezone)) {
+      throw conflict('La semana todavía no termina en California', 'week_not_ended');
+    }
 
-  const computation = await computeWeek(organizationId, weekStart);
-  if (computation.anomaly_count > 0) {
-    throw conflict(
-      `No se puede cerrar: hay ${computation.anomaly_count} anomalía(s) sin resolver. Corrígelas en Asistencia.`,
-      'anomalies_pending'
+    // Every mutation obtains the same advisory lock, so this calculation and
+    // snapshot cannot race a foreman correction.
+    const computation = await computeWeek(organizationId, weekStart);
+    if (computation.anomaly_count > 0) {
+      throw conflict(
+        `No se puede cerrar: hay ${computation.anomaly_count} incidencia(s) bloqueante(s).`,
+        'anomalies_pending'
+      );
+    }
+    const version = period.current_version + 1;
+    const snapshot = hoursOnly(computation);
+    const hash = snapshotHash(snapshot);
+    const inserted = await client.query<{ id: string; finalized_at: Date }>(
+      `INSERT INTO report_versions
+         (organization_id, pay_period_id, version, snapshot, snapshot_hash,
+          finalized_by, finalization_reason)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
+       RETURNING id, finalized_at`,
+      [
+        organizationId,
+        period.id,
+        version,
+        JSON.stringify(snapshot),
+        hash,
+        req.user!.id,
+        body.reason ?? null,
+      ]
     );
-  }
+    await client.query(
+      `UPDATE pay_periods
+       SET status = 'final', current_version = $3,
+           finalized_at = $4, finalized_by = $5,
+           updated_at = now()
+       WHERE id = $1 AND organization_id = $2`,
+      [period.id, organizationId, version, inserted.rows[0]!.finalized_at, req.user!.id]
+    );
+    await recordAudit(
+      {
+        organizationId,
+        actorUserId: req.user!.id,
+        action: 'pay_period.finalized',
+        entityType: 'pay_period',
+        entityId: period.id,
+        reason: body.reason ?? null,
+        metadata: { week_start: weekStart, version, snapshot_hash: hash },
+      },
+      client
+    );
+    return { id: inserted.rows[0]!.id, version, snapshot_hash: hash };
+  });
+  res.status(201).json({ ok: true, ...closed, week_start: weekStart });
+});
 
-  const row = await queryOne<{ id: string }>(
-    `INSERT INTO weekly_reports (organization_id, week_start, week_end, generated_by, data, status)
-     VALUES ($1, $2::date, $3::date, $4, $5, 'final')
-     RETURNING id`,
-    [organizationId, weekStart, computation.week_end, req.user!.id, JSON.stringify(computation)]
+reportsRouter.post('/week/:weekStart/reopen', requireAdmin, async (req, res) => {
+  const param = String(req.params.weekStart);
+  if (!DATE_RE.test(param)) throw badRequest('Fecha inválida');
+  const organizationId = requireOrganization(req);
+  const weekStart = await normalizeWeekStart(organizationId, param);
+  const body = z.object({ reason: z.string().trim().min(3, 'La razón es obligatoria') }).parse(req.body);
+  const settings = await getSettings(organizationId);
+
+  const period = await withTransaction(async (client) => {
+    const locked = await lockPayPeriod(client, organizationId, weekStart, settings.timezone);
+    if (locked.status !== 'final') throw conflict('Solo una semana final puede reabrirse');
+    await client.query(
+      `UPDATE pay_periods
+       SET status = 'reopened', reopened_at = now(), reopened_by = $3,
+           reopen_reason = $4, updated_at = now()
+       WHERE id = $1 AND organization_id = $2`,
+      [locked.id, organizationId, req.user!.id, body.reason]
+    );
+    await recordAudit(
+      {
+        organizationId,
+        actorUserId: req.user!.id,
+        action: 'pay_period.reopened',
+        entityType: 'pay_period',
+        entityId: locked.id,
+        reason: body.reason,
+        metadata: { week_start: weekStart, prior_version: locked.current_version },
+      },
+      client
+    );
+    return locked;
+  });
+  res.json({ ok: true, id: period.id, week_start: weekStart, status: 'reopened' });
+});
+
+reportsRouter.get('/week/:weekStart/versions', async (req, res) => {
+  if (!DATE_RE.test(req.params.weekStart)) throw badRequest('Fecha inválida');
+  const organizationId = requireOrganization(req);
+  const weekStart = await normalizeWeekStart(organizationId, req.params.weekStart);
+  res.json(
+    await query(
+      `SELECT rv.id, rv.version, rv.snapshot_hash, rv.finalized_at,
+              rv.finalized_by, u.name AS finalized_by_name, rv.finalization_reason
+       FROM report_versions rv
+       JOIN pay_periods p ON p.id = rv.pay_period_id
+       JOIN users u ON u.id = rv.finalized_by
+       WHERE rv.organization_id = $1 AND p.week_start = $2::date
+       ORDER BY rv.version DESC`,
+      [organizationId, weekStart]
+    )
   );
-  res.status(201).json({ ok: true, id: row!.id, week_start: weekStart });
+});
+
+/** Recupera exactamente el snapshot histórico que vio la contadora. */
+reportsRouter.get('/week/:weekStart/versions/:version', async (req, res) => {
+  if (!DATE_RE.test(req.params.weekStart)) throw badRequest('Fecha inválida');
+  const version = z.coerce.number().int().positive().parse(req.params.version);
+  const organizationId = requireOrganization(req);
+  const weekStart = await normalizeWeekStart(organizationId, req.params.weekStart);
+  const historical = await queryOne<{
+    snapshot: WeekComputation;
+    snapshot_hash: string;
+    finalized_at: Date;
+    finalized_by_name: string;
+  }>(
+    `SELECT rv.snapshot, rv.snapshot_hash, rv.finalized_at,
+            u.name AS finalized_by_name
+     FROM report_versions rv
+     JOIN pay_periods p ON p.id = rv.pay_period_id
+     JOIN users u ON u.id = rv.finalized_by
+     WHERE rv.organization_id = $1
+       AND p.week_start = $2::date
+       AND rv.version = $3`,
+    [organizationId, weekStart, version]
+  );
+  if (!historical) throw notFound('La versión solicitada no existe');
+  res.json({
+    ...hoursOnly(historical.snapshot),
+    status: 'final',
+    version,
+    snapshot_hash: historical.snapshot_hash,
+    finalized_at: historical.finalized_at,
+    finalized_by: historical.finalized_by_name,
+  });
 });
 
 reportsRouter.get('/weeks', async (req, res) => {
   res.json(
     await query(
-      `SELECT w.id, w.week_start, w.week_end, w.status, w.generated_at, u.name AS generated_by_name
-       FROM weekly_reports w JOIN users u ON u.id = w.generated_by
-       WHERE w.organization_id = $1
-       ORDER BY w.week_start DESC LIMIT 52`
+      `SELECT p.id, p.week_start, p.week_end, p.status, p.current_version,
+              rv.finalized_at, u.name AS finalized_by_name, rv.snapshot_hash
+       FROM pay_periods p
+       LEFT JOIN report_versions rv
+         ON rv.pay_period_id = p.id AND rv.version = p.current_version
+       LEFT JOIN users u ON u.id = rv.finalized_by
+       WHERE p.organization_id = $1
+       ORDER BY p.week_start DESC LIMIT 52`
       , [requireOrganization(req)]
     )
   );
@@ -214,10 +366,13 @@ reportsRouter.get('/week/:weekStart/export', async (req, res) => {
   const weekStart = await normalizeWeekStart(organizationId, req.params.weekStart);
   const { format, sheet } = exportSchema.parse(req.query);
 
-  const final = await getFinalReport(organizationId, weekStart);
-  const computation = hoursOnly(final ? final.data : await computeWeek(organizationId, weekStart));
+  const period = await getPeriodReport(organizationId, weekStart);
+  const isFinal = period?.status === 'final' && Boolean(period.snapshot);
+  const computation = hoursOnly(
+    isFinal ? period!.snapshot! : await computeWeek(organizationId, weekStart)
+  );
   const tz = (await getSettings(organizationId)).timezone;
-  const suffix = final ? '' : '-BORRADOR';
+  const suffix = isFinal ? `-v${period!.current_version}` : '-BORRADOR';
   const base = `nomina-semana-${weekStart}${suffix}`;
 
   if (format === 'csv') {
