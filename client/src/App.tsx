@@ -31,7 +31,7 @@ import { NotificationsBell } from './components/NotificationsBell';
 import { canAccessRoute, landingRoute, type ProtectedRoute } from './auth/accessPolicy';
 
 const NAV = [
-  { to: '/dashboard', label: 'Hoy', icon: LayoutDashboard, roles: ['admin', 'foreman'] },
+  { to: '/dashboard', label: 'Operación', icon: LayoutDashboard, roles: ['admin', 'foreman'] },
   { to: '/employees', label: 'Empleados', icon: Users, roles: ['admin', 'foreman'] },
   { to: '/attendance', label: 'Asistencia', icon: CalendarCheck, roles: ['admin', 'foreman'] },
   { to: '/exceptions', label: 'Incidencias', icon: AlertTriangle, roles: ['admin', 'foreman'] },

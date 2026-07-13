@@ -60,3 +60,4 @@ Variables de entorno documentadas en `server/.env.example`.
 - [Identidad facial y revisión humana](docs/phase-5-facial-identity.md)
 - [Incidencias operativas y notificaciones](docs/phase-6-operational-exceptions.md)
 - [Portal contable y exportes inmutables](docs/phase-7-accountant-report.md)
+- [Dashboard operativo, costos y tasas efectivas](docs/phase-8-dashboard-costs.md)

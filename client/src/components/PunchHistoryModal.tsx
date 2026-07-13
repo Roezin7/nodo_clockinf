@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { CalendarCheck } from 'lucide-react';
-import type { Employee, Punch, PunchType } from '@clockai/shared';
+import type { Punch, PunchType } from '@clockai/shared';
 import { api } from '../api';
 import { fmtDateTime, useAppTimezone } from '../time';
 import { EmptyState, Modal, Skeleton, StatusBadge } from './ui';
@@ -14,7 +14,13 @@ export const PUNCH_TYPE_LABELS: Record<PunchType, string> = {
 
 type PunchWithExtras = Punch & { photo_url: string | null; area_name: string | null };
 
-export default function PunchHistoryModal({ employee, onClose }: { employee: Employee; onClose: () => void }) {
+interface PunchHistoryEmployee {
+  id: string;
+  full_name: string;
+  employee_number: number;
+}
+
+export default function PunchHistoryModal({ employee, onClose }: { employee: PunchHistoryEmployee; onClose: () => void }) {
   useAppTimezone(); // re-render si cambia la zona de la planta
   const [punches, setPunches] = useState<PunchWithExtras[] | null>(null);
   const [photoView, setPhotoView] = useState<string | null>(null);

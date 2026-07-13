@@ -33,6 +33,7 @@ import {
   sanitizeAccountantSnapshot,
   type SafeAccountantReport,
 } from '../services/accountantReport.js';
+import { buildAdminDirectCostSnapshot } from '../services/dashboardCosts.js';
 
 export const reportsRouter = Router();
 reportsRouter.use(requireAuth, requireRole('admin', 'accountant'));
@@ -359,6 +360,15 @@ reportsRouter.post('/week/:weekStart/finalize', requireAdmin, async (req, res) =
       });
       const hash = snapshotHash(snapshot);
       const artifacts = await renderReportArtifacts(snapshot);
+      const costSnapshot = await buildAdminDirectCostSnapshot({
+        organizationId,
+        weekStart,
+        timezone: settings.timezone,
+        reportVersion: version,
+        createdAt: finalizedAt,
+        client,
+      });
+      const costSnapshotHash = snapshotHash(costSnapshot);
       const inserted = await client.query<{ id: string }>(
         `INSERT INTO report_versions
            (organization_id, pay_period_id, version, snapshot, snapshot_hash,
@@ -378,6 +388,19 @@ reportsRouter.post('/week/:weekStart/finalize', requireAdmin, async (req, res) =
           finalizedAt,
           body.reason ?? null,
         ]
+      );
+      await client.query(
+        `INSERT INTO report_cost_snapshots
+           (organization_id, report_version_id, schema_version, contract,
+            snapshot, snapshot_hash, created_at)
+         VALUES ($1, $2, 1, 'clockai-admin-direct-cost-v1', $3, $4, $5)`,
+        [
+          organizationId,
+          inserted.rows[0]!.id,
+          JSON.stringify(costSnapshot),
+          costSnapshotHash,
+          finalizedAt,
+        ],
       );
       for (const artifact of artifacts) {
         await client.query(
@@ -423,6 +446,8 @@ reportsRouter.post('/week/:weekStart/finalize', requireAdmin, async (req, res) =
             snapshot_schema_version: ACCOUNTANT_REPORT_SCHEMA_VERSION,
             snapshot_contract: ACCOUNTANT_REPORT_CONTRACT,
             hash_algorithm: 'sha256',
+            admin_cost_snapshot_hash: costSnapshotHash,
+            admin_cost_coverage_ratio: costSnapshot.week.metric.coverage_ratio,
             export_artifacts: Object.fromEntries(
               artifacts.map((artifact) => [artifact.kind, artifact.contentSha256]),
             ),

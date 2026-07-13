@@ -4,7 +4,7 @@ import crypto from 'node:crypto';
 import multer from 'multer';
 import { z } from 'zod';
 import { query, queryOne, withTransaction } from '../db.js';
-import { badRequest, notFound } from '../errors.js';
+import { badRequest, conflict, notFound } from '../errors.js';
 import {
   requireAdmin,
   requireAuth,
@@ -23,6 +23,14 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: FAC
 
 export const employeesRouter = Router();
 employeesRouter.use(requireAuth, requireRole('admin', 'foreman'));
+// Employee lists contain personal data and the admin variants also expose
+// wage rates/SSN on demand. Never allow a browser, proxy or service worker to
+// retain any response from this router.
+employeesRouter.use((_req, res, next) => {
+  res.header('Cache-Control', 'private, no-store, max-age=0');
+  res.header('Pragma', 'no-cache');
+  next();
+});
 
 export interface EmployeeRow {
   id: string;
@@ -46,6 +54,41 @@ const SAFE_COLS = `id, organization_id, employee_number, full_name, default_shif
 const ADMIN_COLS = `id, organization_id, employee_number, full_name, social_security, phone,
   enrollment_photo_key, current_biometric_enrollment_id, default_shift_id, active, hired_at,
   deactivated_at, created_at`;
+const SAFE_LIST_COLS = `e.id, e.organization_id, e.employee_number, e.full_name,
+  e.default_shift_id, e.active, e.hired_at, e.deactivated_at, e.created_at`;
+const ADMIN_LIST_COLS = `${SAFE_LIST_COLS}, e.phone, e.current_biometric_enrollment_id,
+  be.status AS biometric_enrollment_status,
+  CASE WHEN current_rate.id IS NULL THEN NULL ELSE jsonb_build_object(
+    'hourly_rate', current_rate.hourly_rate::text,
+    'effective_from', current_rate.effective_from
+  ) END AS current_rate`;
+
+const isoDateSchema = z
+  .string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/)
+  .refine((value) => {
+    const [year, month, day] = value.split('-').map(Number);
+    const parsed = new Date(Date.UTC(year!, month! - 1, day!));
+    return (
+      parsed.getUTCFullYear() === year &&
+      parsed.getUTCMonth() === month! - 1 &&
+      parsed.getUTCDate() === day
+    );
+  }, 'La fecha no existe');
+
+/** Decimal exacto: nunca pasa por Number para no redondear una tarifa. */
+export const hourlyRateSchema = z
+  .string()
+  .trim()
+  .regex(
+    /^(?:0|[1-9]\d{0,7})(?:\.\d{1,4})?$/,
+    'La tasa debe ser un decimal entre 0 y 99999999.9999 con máximo 4 decimales'
+  );
+
+function canonicalHourlyRate(value: string): string {
+  const [whole, fraction = ''] = value.split('.');
+  return `${whole}.${fraction.padEnd(4, '0')}`;
+}
 
 /** PIN aleatorio de 4 dígitos, imprimible para la credencial. */
 export function generatePin(): string {
@@ -56,20 +99,52 @@ employeesRouter.get('/', async (req, res) => {
   const organizationId = requireOrganization(req);
   const active = req.query.active as string | undefined;
   const search = (req.query.search as string | undefined)?.trim();
-  const where = ['organization_id = $1'];
+  const where = ['e.organization_id = $1'];
   const params: unknown[] = [organizationId];
   if (active === 'true' || active === 'false') {
     params.push(active === 'true');
-    where.push(`active = $${params.length}`);
+    where.push(`e.active = $${params.length}`);
   }
   if (search) {
     params.push(`%${search}%`);
-    where.push(`(full_name ILIKE $${params.length} OR employee_number::text ILIKE $${params.length})`);
+    where.push(
+      `(e.full_name ILIKE $${params.length} OR e.employee_number::text ILIKE $${params.length})`
+    );
   }
-  const cols = req.user!.role === 'admin' ? ADMIN_COLS : SAFE_COLS;
+  if (req.user!.role !== 'admin') {
+    res.json(
+      await query(
+        `SELECT ${SAFE_LIST_COLS}
+         FROM employees e
+         WHERE ${where.join(' AND ')}
+         ORDER BY e.employee_number`,
+        params
+      )
+    );
+    return;
+  }
   res.json(
     await query(
-      `SELECT ${cols} FROM employees WHERE ${where.join(' AND ')} ORDER BY employee_number`,
+      `SELECT ${ADMIN_LIST_COLS}
+       FROM employees e
+       JOIN organizations o ON o.id = e.organization_id
+       LEFT JOIN biometric_enrollments be
+         ON be.id = e.current_biometric_enrollment_id
+        AND be.employee_id = e.id
+        AND be.organization_id = e.organization_id
+       LEFT JOIN LATERAL (
+         SELECT r.id, r.hourly_rate, r.effective_from
+         FROM employee_rates r
+         WHERE r.employee_id = e.id
+           AND r.organization_id = e.organization_id
+           AND r.effective_from <= (now() AT TIME ZONE o.timezone)::date
+           AND (r.effective_to IS NULL
+             OR r.effective_to >= (now() AT TIME ZONE o.timezone)::date)
+         ORDER BY r.effective_from DESC
+         LIMIT 1
+       ) current_rate ON true
+       WHERE ${where.join(' AND ')}
+       ORDER BY e.employee_number`,
       params
     )
   );
@@ -78,16 +153,48 @@ employeesRouter.get('/', async (req, res) => {
 employeesRouter.get('/:id', async (req, res) => {
   const organizationId = requireOrganization(req);
   const admin = req.user!.role === 'admin';
-  const row = await queryOne<EmployeeRow>(
-    `SELECT ${admin ? ADMIN_COLS : SAFE_COLS}
-     FROM employees WHERE id = $1 AND organization_id = $2`,
-    [req.params.id, organizationId]
+  const row = admin
+    ? await queryOne<EmployeeRow & { enrollment_photo_key: string | null }>(
+        `SELECT e.id, e.organization_id, e.employee_number, e.full_name,
+                e.social_security, e.phone, e.enrollment_photo_key,
+                e.current_biometric_enrollment_id, e.default_shift_id, e.active,
+                e.hired_at, e.deactivated_at, e.created_at,
+                be.status AS biometric_enrollment_status,
+                CASE WHEN current_rate.id IS NULL THEN NULL ELSE jsonb_build_object(
+                  'hourly_rate', current_rate.hourly_rate::text,
+                  'effective_from', current_rate.effective_from
+                ) END AS current_rate
+         FROM employees e
+         JOIN organizations o ON o.id = e.organization_id
+         LEFT JOIN biometric_enrollments be
+           ON be.id = e.current_biometric_enrollment_id
+          AND be.employee_id = e.id
+          AND be.organization_id = e.organization_id
+         LEFT JOIN LATERAL (
+           SELECT r.id, r.hourly_rate, r.effective_from
+           FROM employee_rates r
+           WHERE r.employee_id = e.id
+             AND r.organization_id = e.organization_id
+             AND r.effective_from <= (now() AT TIME ZONE o.timezone)::date
+             AND (r.effective_to IS NULL
+               OR r.effective_to >= (now() AT TIME ZONE o.timezone)::date)
+           ORDER BY r.effective_from DESC
+           LIMIT 1
+         ) current_rate ON true
+         WHERE e.id = $1 AND e.organization_id = $2`,
+        [req.params.id, organizationId]
+      )
+    : await queryOne<EmployeeRow>(
+        `SELECT ${SAFE_COLS}
+         FROM employees WHERE id = $1 AND organization_id = $2`,
+        [req.params.id, organizationId]
   );
   if (!row) throw notFound('Empleado no encontrado');
+  const { enrollment_photo_key: enrollmentPhotoKey, ...publicRow } = row;
   res.json({
-    ...row,
+    ...publicRow,
     enrollment_photo_url:
-      admin && row.enrollment_photo_key ? await storage.viewUrl(row.enrollment_photo_key) : undefined,
+      admin && enrollmentPhotoKey ? await storage.viewUrl(enrollmentPhotoKey) : undefined,
   });
 });
 
@@ -158,7 +265,7 @@ employeesRouter.post('/:id/photo', requireAdmin, upload.single('photo'), async (
         },
         client
       );
-      return { ...(inserted.rows[0] as Record<string, unknown>), photo_key: key };
+      return inserted.rows[0] as Record<string, unknown>;
     });
   } catch (error) {
     if (uploadedKey) {
@@ -192,54 +299,117 @@ employeesRouter.post('/:id/photo', requireAdmin, upload.single('photo'), async (
   });
 });
 
-const createSchema = z.object({
+const employeeFieldsSchema = z.object({
   full_name: z.string().trim().min(1),
   social_security: z.string().trim().optional().nullable(),
   phone: z.string().trim().optional().nullable(),
   default_shift_id: z.string().uuid().optional().nullable(),
-  hired_at: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().nullable(),
-  pin: z.string().regex(/^\d{4}$/).optional(),
-  hourly_rate: z.coerce.number().nonnegative().optional(),
+  hired_at: isoDateSchema.optional().nullable(),
 });
+const createSchema = employeeFieldsSchema
+  .extend({
+    pin: z.string().regex(/^\d{4}$/).optional(),
+    hourly_rate: hourlyRateSchema.optional(),
+    rate_effective_from: isoDateSchema.optional(),
+  })
+  .strict()
+  .superRefine((body, context) => {
+    if ((body.hourly_rate === undefined) !== (body.rate_effective_from === undefined)) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'hourly_rate y rate_effective_from deben enviarse juntos',
+        path: body.hourly_rate === undefined ? ['hourly_rate'] : ['rate_effective_from'],
+      });
+    }
+    if (
+      body.hired_at &&
+      body.rate_effective_from &&
+      body.rate_effective_from < body.hired_at
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'La tasa inicial no puede comenzar antes de la contratación',
+        path: ['rate_effective_from'],
+      });
+    }
+  });
 
 employeesRouter.post('/', requireAdmin, async (req, res) => {
   const organizationId = requireOrganization(req);
   const body = createSchema.parse(req.body);
   const pin = body.pin ?? generatePin();
-  const row = await queryOne<{ id: string; employee_number: number }>(
-    `INSERT INTO employees
-       (organization_id, full_name, social_security, phone, default_shift_id, hired_at, pin_hash)
-     VALUES ($1, $2, $3, $4, $5, $6, $7)
-     RETURNING ${ADMIN_COLS}`,
-    [
-      organizationId,
-      body.full_name,
-      body.social_security ?? null,
-      body.phone ?? null,
-      body.default_shift_id ?? null,
-      body.hired_at ?? null,
-      await bcrypt.hash(pin, 10),
-    ]
-  );
-  if (body.hourly_rate !== undefined) {
-    await query(
-      `INSERT INTO employee_rates
-       (organization_id, employee_id, hourly_rate, effective_from, created_by)
-       VALUES ($1, $2, $3, COALESCE($4::date, current_date), $5)`,
-      [organizationId, row!.id, body.hourly_rate, body.hired_at ?? null, req.user!.id]
+  const pinHash = await bcrypt.hash(pin, 10);
+  const result = await withTransaction(async (client) => {
+    const inserted = await client.query<EmployeeRow>(
+      `INSERT INTO employees
+         (organization_id, full_name, social_security, phone, default_shift_id, hired_at, pin_hash)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
+       RETURNING ${ADMIN_COLS}`,
+      [
+        organizationId,
+        body.full_name,
+        body.social_security ?? null,
+        body.phone ?? null,
+        body.default_shift_id ?? null,
+        body.hired_at ?? null,
+        pinHash,
+      ]
     );
-  }
-  await recordAudit({
-    organizationId,
-    actorUserId: req.user!.id,
-    action: 'employee.created',
-    entityType: 'employee',
-    entityId: row!.id,
+    const row = inserted.rows[0]!;
+    let currentRate: { hourly_rate: string; effective_from: string } | null = null;
+    if (body.hourly_rate !== undefined) {
+      const rate = await client.query<{ id: string; hourly_rate: string; effective_from: string }>(
+        `INSERT INTO employee_rates
+           (organization_id, employee_id, hourly_rate, effective_from, created_by)
+         VALUES (
+           $1, $2, $3,
+           $4::date,
+           $5
+         )
+         RETURNING id, hourly_rate::text, effective_from`,
+        [organizationId, row.id, body.hourly_rate, body.rate_effective_from, req.user!.id]
+      );
+      currentRate = {
+        hourly_rate: rate.rows[0]!.hourly_rate,
+        effective_from: rate.rows[0]!.effective_from,
+      };
+      await recordAudit(
+        {
+          organizationId,
+          actorUserId: req.user!.id,
+          action: 'employee.rate_initialized',
+          entityType: 'employee_rate',
+          entityId: rate.rows[0]!.id,
+          metadata: {
+            employee_id: row.id,
+            old: null,
+            new: {
+              hourly_rate: rate.rows[0]!.hourly_rate,
+              effective_from: rate.rows[0]!.effective_from,
+              effective_to: null,
+            },
+          },
+        },
+        client
+      );
+    }
+    await recordAudit(
+      {
+        organizationId,
+        actorUserId: req.user!.id,
+        action: 'employee.created',
+        entityType: 'employee',
+        entityId: row.id,
+      },
+      client
+    );
+    return { row, currentRate };
   });
-  res.status(201).json({ ...row, pin });
+  const { enrollment_photo_key: _internalPhotoKey, ...publicEmployee } = result.row;
+  res.status(201).json({ ...publicEmployee, current_rate: result.currentRate, pin });
 });
 
-const patchSchema = createSchema.partial().omit({ pin: true, hourly_rate: true });
+const patchSchema = employeeFieldsSchema.partial().strict();
 
 employeesRouter.patch('/:id', requireAdmin, async (req, res) => {
   const organizationId = requireOrganization(req);
@@ -252,22 +422,53 @@ employeesRouter.patch('/:id', requireAdmin, async (req, res) => {
   }
   if (!sets.length) throw badRequest('Nada que actualizar');
   params.push(req.params.id, organizationId);
-  const row = await queryOne<{ id: string }>(
-    `UPDATE employees SET ${sets.join(', ')}
-     WHERE id = $${params.length - 1} AND organization_id = $${params.length}
-     RETURNING ${ADMIN_COLS}`,
-    params
-  );
-  if (!row) throw notFound('Empleado no encontrado');
-  await recordAudit({
-    organizationId,
-    actorUserId: req.user!.id,
-    action: 'employee.updated',
-    entityType: 'employee',
-    entityId: row.id,
-    metadata: { fields: Object.keys(body) },
+  const row = await withTransaction(async (client) => {
+    const employee = await client.query<{ id: string }>(
+      `SELECT id FROM employees
+       WHERE id = $1 AND organization_id = $2
+       FOR UPDATE`,
+      [req.params.id, organizationId]
+    );
+    if (!employee.rows[0]) throw notFound('Empleado no encontrado');
+    if (body.hired_at) {
+      const firstRate = await client.query<{ effective_from: string }>(
+        `SELECT effective_from
+         FROM employee_rates
+         WHERE employee_id = $1 AND organization_id = $2
+         ORDER BY effective_from
+         LIMIT 1
+         FOR UPDATE`,
+        [req.params.id, organizationId]
+      );
+      if (firstRate.rows[0] && body.hired_at > firstRate.rows[0].effective_from) {
+        throw conflict(
+          `La contratación no puede quedar después de la primera tasa (${firstRate.rows[0].effective_from})`,
+          'RATE_HIRE_AFTER_FIRST_RATE',
+          { first_rate_effective_from: firstRate.rows[0].effective_from }
+        );
+      }
+    }
+    const updated = await client.query<EmployeeRow>(
+      `UPDATE employees SET ${sets.join(', ')}
+       WHERE id = $${params.length - 1} AND organization_id = $${params.length}
+       RETURNING ${ADMIN_COLS}`,
+      params
+    );
+    await recordAudit(
+      {
+        organizationId,
+        actorUserId: req.user!.id,
+        action: 'employee.updated',
+        entityType: 'employee',
+        entityId: updated.rows[0]!.id,
+        metadata: { fields: Object.keys(body) },
+      },
+      client
+    );
+    return updated.rows[0]!;
   });
-  res.json(row);
+  const { enrollment_photo_key: _internalPhotoKey, ...publicEmployee } = row;
+  res.json(publicEmployee);
 });
 
 employeesRouter.post('/:id/deactivate', requireAdmin, async (req, res) => {
@@ -287,12 +488,13 @@ employeesRouter.post('/:id/deactivate', requireAdmin, async (req, res) => {
     entityType: 'employee',
     entityId: row.id,
   });
-  res.json(row);
+  const { enrollment_photo_key: _internalPhotoKey, ...publicEmployee } = row;
+  res.json(publicEmployee);
 });
 
 employeesRouter.post('/:id/reactivate', requireAdmin, async (req, res) => {
   const organizationId = requireOrganization(req);
-  const row = await queryOne<{ id: string }>(
+  const row = await queryOne<EmployeeRow>(
     `UPDATE employees SET active = true, deactivated_at = NULL
      WHERE id = $1 AND organization_id = $2 RETURNING ${ADMIN_COLS}`,
     [req.params.id, organizationId]
@@ -305,7 +507,8 @@ employeesRouter.post('/:id/reactivate', requireAdmin, async (req, res) => {
     entityType: 'employee',
     entityId: row.id,
   });
-  res.json(row);
+  const { enrollment_photo_key: _internalPhotoKey, ...publicEmployee } = row;
+  res.json(publicEmployee);
 });
 
 employeesRouter.post('/:id/reset-pin', requireAdmin, async (req, res) => {
@@ -326,11 +529,22 @@ employeesRouter.post('/:id/reset-pin', requireAdmin, async (req, res) => {
   res.json({ id: row.id, pin });
 });
 
-const rateSchema = z.object({
-  hourly_rate: z.coerce.number().nonnegative(),
-  effective_from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
-  effective_to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional(),
+const rateChangeSchema = z.object({
+  hourly_rate: hourlyRateSchema,
+  effective_from: isoDateSchema,
+  reason: z.string().trim().min(3).max(2_000),
 });
+
+interface RateHistoryRow {
+  id: string;
+  hourly_rate: string;
+  effective_from: string;
+  effective_to: string | null;
+}
+
+function databaseErrorCode(error: unknown): string | undefined {
+  return error && typeof error === 'object' ? (error as { code?: string }).code : undefined;
+}
 
 employeesRouter.get('/:id/rates', requireAdmin, async (req, res) => {
   const organizationId = requireOrganization(req);
@@ -341,43 +555,184 @@ employeesRouter.get('/:id/rates', requireAdmin, async (req, res) => {
   if (!employee) throw notFound('Empleado no encontrado');
   res.json(
     await query(
-      `SELECT id, employee_id, hourly_rate, effective_from, effective_to, created_at
+      `SELECT id, hourly_rate::text, effective_from, effective_to,
+              reason, created_at
        FROM employee_rates
        WHERE employee_id = $1 AND organization_id = $2
        ORDER BY effective_from DESC`,
       [req.params.id, organizationId]
     )
-  );
+);
 });
 
-employeesRouter.post('/:id/rates', requireAdmin, async (req, res) => {
-  const organizationId = requireOrganization(req);
-  const body = rateSchema.parse(req.body);
-  const employee = await queryOne(
-    `SELECT id FROM employees WHERE id = $1 AND organization_id = $2`,
-    [req.params.id, organizationId]
-  );
-  if (!employee) throw notFound('Empleado no encontrado');
-  const row = await queryOne<{ id: string }>(
-    `INSERT INTO employee_rates
-       (organization_id, employee_id, hourly_rate, effective_from, effective_to, created_by)
-     VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
-    [
-      organizationId,
-      req.params.id,
-      body.hourly_rate,
-      body.effective_from,
-      body.effective_to ?? null,
-      req.user!.id,
-    ]
-  );
-  await recordAudit({
-    organizationId,
-    actorUserId: req.user!.id,
-    action: 'employee.rate_created',
-    entityType: 'employee_rate',
-    entityId: row!.id,
-    metadata: { employee_id: req.params.id, effective_from: body.effective_from },
+/**
+ * Reemplazo explícito del endpoint inseguro que permitía intervalos arbitrarios.
+ * Mantenerlo como 410 hace visible la migración a clientes antiguos.
+ */
+employeesRouter.post('/:id/rates', requireAdmin, (_req, res) => {
+  res.status(410).json({
+    error: 'Este endpoint fue retirado; usa POST /api/employees/:id/rates/change',
+    code: 'RATE_ENDPOINT_RETIRED',
   });
+});
+
+employeesRouter.post('/:id/rates/change', requireAdmin, async (req, res) => {
+  const organizationId = requireOrganization(req);
+  const body = rateChangeSchema.parse(req.body);
+  let row: RateHistoryRow & { reason: string; created_at: string };
+  try {
+    row = await withTransaction(async (client) => {
+      // Advisory + row lock serialize all changes for one employee, including
+      // concurrent requests arriving on different application instances.
+      await client.query(
+        `SELECT pg_advisory_xact_lock(hashtext('employee-rate'), hashtext($1))`,
+        [`${organizationId}:${req.params.id}`]
+      );
+      const employeeResult = await client.query<{ id: string; hired_at: string | null }>(
+        `SELECT id, hired_at
+         FROM employees
+         WHERE id = $1 AND organization_id = $2
+         FOR UPDATE`,
+        [req.params.id, organizationId]
+      );
+      const employee = employeeResult.rows[0];
+      if (!employee) throw notFound('Empleado no encontrado');
+      if (employee.hired_at && body.effective_from < employee.hired_at) {
+        throw conflict(
+          'La tasa no puede iniciar antes de la fecha de contratación',
+          'RATE_BEFORE_HIRE'
+        );
+      }
+
+      const historyResult = await client.query<RateHistoryRow>(
+        `SELECT id, hourly_rate::text, effective_from, effective_to
+         FROM employee_rates
+         WHERE employee_id = $1 AND organization_id = $2
+         ORDER BY effective_from
+         FOR UPDATE`,
+        [employee.id, organizationId]
+      );
+      const history = historyResult.rows;
+      const exact = history.find((rate) => rate.effective_from === body.effective_from);
+      if (exact) {
+        throw conflict(
+          'Ya existe una tasa que inicia en esa fecha',
+          'RATE_DATE_CONFLICT',
+          { effective_from: body.effective_from }
+        );
+      }
+
+      const covering = history.find(
+        (rate) =>
+          rate.effective_from < body.effective_from &&
+          (rate.effective_to === null || rate.effective_to >= body.effective_from)
+      );
+      if (covering && covering.hourly_rate === canonicalHourlyRate(body.hourly_rate)) {
+        throw conflict('La tasa nueva es igual a la vigente', 'RATE_UNCHANGED');
+      }
+
+      const next = history.find((rate) => rate.effective_from > body.effective_from);
+      // The new fact applies through the day before the next known rate (or
+      // indefinitely). Protect every finalized/reviewing payroll week touched
+      // by that interval, not merely the week containing effective_from.
+      const lockedPeriods = await client.query<{
+        week_start: string;
+        week_end: string;
+        status: 'ready_for_review' | 'final';
+      }>(
+        `SELECT week_start, week_end, status
+         FROM pay_periods
+         WHERE organization_id = $1
+           AND status IN ('ready_for_review', 'final')
+           AND week_end >= $2::date
+           AND ($3::date IS NULL OR week_start < $3::date)
+         ORDER BY week_start
+         LIMIT 20`,
+        [organizationId, body.effective_from, next?.effective_from ?? null]
+      );
+      if (lockedPeriods.rows[0]) {
+        const period = lockedPeriods.rows[0];
+        throw conflict(
+          period.status === 'final'
+            ? 'La vigencia alcanzaría un periodo final; reabre todas las semanas afectadas antes de cambiar la tasa'
+            : 'La vigencia alcanzaría un periodo en revisión; reanuda todas las semanas afectadas antes de cambiar la tasa',
+          'RATE_PERIOD_LOCKED',
+          {
+            status: period.status,
+            week_start: period.week_start,
+            week_end: period.week_end,
+            affected_locked_periods: lockedPeriods.rows.length,
+            proposed_end_exclusive: next?.effective_from ?? null,
+          }
+        );
+      }
+      let closedEffectiveTo: string | null = null;
+      if (covering) {
+        const closed = await client.query<{ effective_to: string }>(
+          `UPDATE employee_rates
+           SET effective_to = $3::date - 1
+           WHERE id = $1 AND organization_id = $2
+           RETURNING effective_to`,
+          [covering.id, organizationId, body.effective_from]
+        );
+        closedEffectiveTo = closed.rows[0]!.effective_to;
+      }
+      const inserted = await client.query<RateHistoryRow & { reason: string; created_at: string }>(
+        `INSERT INTO employee_rates
+           (organization_id, employee_id, hourly_rate, effective_from,
+            effective_to, reason, created_by)
+         VALUES ($1, $2, $3, $4, $5::date - 1, $6, $7)
+         RETURNING id, hourly_rate::text, effective_from, effective_to,
+                   reason, created_at`,
+        [
+          organizationId,
+          employee.id,
+          body.hourly_rate,
+          body.effective_from,
+          next?.effective_from ?? null,
+          body.reason,
+          req.user!.id,
+        ]
+      );
+      const created = inserted.rows[0]!;
+      await recordAudit(
+        {
+          organizationId,
+          actorUserId: req.user!.id,
+          action: 'employee.rate_changed',
+          entityType: 'employee_rate',
+          entityId: created.id,
+          reason: body.reason,
+          metadata: {
+            employee_id: employee.id,
+            old: covering
+              ? {
+                  rate_id: covering.id,
+                  hourly_rate: covering.hourly_rate,
+                  effective_from: covering.effective_from,
+                  effective_to_before: covering.effective_to,
+                  effective_to_after: closedEffectiveTo,
+                }
+              : null,
+            new: {
+              hourly_rate: created.hourly_rate,
+              effective_from: created.effective_from,
+              effective_to: created.effective_to,
+            },
+          },
+        },
+        client
+      );
+      return created;
+    });
+  } catch (error) {
+    if (databaseErrorCode(error) === '23P01' || databaseErrorCode(error) === '23505') {
+      throw conflict(
+        'El historial cambió al mismo tiempo; recarga y vuelve a intentarlo',
+        'RATE_HISTORY_CONFLICT'
+      );
+    }
+    throw error;
+  }
   res.status(201).json(row);
 });

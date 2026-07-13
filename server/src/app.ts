@@ -19,6 +19,7 @@ import { manualTimeRouter } from './routes/manualTime.js';
 import { identityReviewsRouter, kioskIdentityRouter } from './routes/identity.js';
 import { operationalExceptionsRouter } from './routes/operationalExceptions.js';
 import { notificationsRouter } from './routes/notifications.js';
+import { dashboardRouter } from './routes/dashboard.js';
 import { storageIsLocal, LOCAL_DIR, verifyLocalPhotoSignature } from './storage.js';
 
 export function createApp(): express.Express {
@@ -73,6 +74,7 @@ export function createApp(): express.Express {
   app.use('/api/plants', plantsRouter);
   app.use('/api/devices', devicesRouter);
   app.use('/api/manual-time', manualTimeRouter);
+  app.use('/api/dashboard', dashboardRouter);
 
   // Solo dev: sirve las fotos guardadas en disco local (sin R2 configurado)
   if (storageIsLocal) {
