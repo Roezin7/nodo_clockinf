@@ -384,16 +384,9 @@ export interface Settings {
   timezone: string;
 }
 
-/** Zonas horarias permitidas (EE.UU. + México DF). */
+/** Zona operativa contratada: las tres plantas están en Modesto, California. */
 export const ALLOWED_TIMEZONES = [
-  { id: 'America/New_York', label: 'Este (New York)' },
-  { id: 'America/Chicago', label: 'Central (Chicago)' },
-  { id: 'America/Denver', label: 'Montaña (Denver)' },
-  { id: 'America/Phoenix', label: 'Arizona (Phoenix, sin DST)' },
   { id: 'America/Los_Angeles', label: 'Pacífico (Los Angeles)' },
-  { id: 'America/Anchorage', label: 'Alaska (Anchorage)' },
-  { id: 'Pacific/Honolulu', label: 'Hawái (Honolulu)' },
-  { id: 'America/Mexico_City', label: 'Ciudad de México' },
 ] as const;
 
 export type AllowedTimezone = (typeof ALLOWED_TIMEZONES)[number]['id'];

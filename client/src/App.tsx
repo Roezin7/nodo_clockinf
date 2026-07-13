@@ -7,6 +7,7 @@ import {
   FileSpreadsheet,
   Settings as SettingsIcon,
   ShieldCheck,
+  AlertTriangle,
   LogOut,
   PanelLeftClose,
   PanelLeftOpen,
@@ -25,12 +26,15 @@ import ReportsPage from './pages/ReportsPage';
 import SettingsPage from './pages/SettingsPage';
 import StyleguidePage from './pages/StyleguidePage';
 import IdentityReviewsPage from './pages/IdentityReviewsPage';
+import ExceptionsPage from './pages/ExceptionsPage';
+import { NotificationsBell } from './components/NotificationsBell';
 import { canAccessRoute, landingRoute, type ProtectedRoute } from './auth/accessPolicy';
 
 const NAV = [
   { to: '/dashboard', label: 'Hoy', icon: LayoutDashboard, roles: ['admin', 'foreman'] },
   { to: '/employees', label: 'Empleados', icon: Users, roles: ['admin', 'foreman'] },
   { to: '/attendance', label: 'Asistencia', icon: CalendarCheck, roles: ['admin', 'foreman'] },
+  { to: '/exceptions', label: 'Incidencias', icon: AlertTriangle, roles: ['admin', 'foreman'] },
   { to: '/identity-reviews', label: 'Identidad', icon: ShieldCheck, roles: ['admin', 'foreman'] },
   { to: '/reports', label: 'Reporte semanal', icon: FileSpreadsheet, roles: ['admin', 'accountant'] },
   { to: '/settings', label: 'Configuración', icon: SettingsIcon, roles: ['admin'] },
@@ -137,6 +141,11 @@ function Shell({ children }: { children: React.ReactNode }) {
       </aside>
 
       <main className="min-w-0 flex-1">
+        {user.role !== 'accountant' && (
+          <div className="sticky top-0 z-30 flex h-14 items-center justify-end border-b border-line bg-base/95 px-6 backdrop-blur">
+            <NotificationsBell />
+          </div>
+        )}
         <div className="mx-auto max-w-7xl p-6">{children}</div>
       </main>
     </div>
@@ -165,6 +174,7 @@ export default function App() {
         <Route path="/dashboard" element={<RoleGuard route="/dashboard"><Shell><DashboardPage /></Shell></RoleGuard>} />
         <Route path="/employees" element={<RoleGuard route="/employees"><Shell><EmployeesPage /></Shell></RoleGuard>} />
         <Route path="/attendance" element={<RoleGuard route="/attendance"><Shell><AttendancePage /></Shell></RoleGuard>} />
+        <Route path="/exceptions" element={<RoleGuard route="/exceptions"><Shell><ExceptionsPage /></Shell></RoleGuard>} />
         <Route path="/identity-reviews" element={<RoleGuard route="/identity-reviews"><Shell><IdentityReviewsPage /></Shell></RoleGuard>} />
         <Route path="/identity" element={<Navigate to="/identity-reviews" replace />} />
         <Route path="/reports" element={<RoleGuard route="/reports"><Shell><ReportsPage /></Shell></RoleGuard>} />

@@ -21,6 +21,13 @@ services:
         value: America/Los_Angeles
       - key: FACE_PROVIDER
         value: review_only
+      # Web Push opcional. Configurar las tres o dejar las tres vacías/ausentes.
+      - key: VAPID_SUBJECT
+        sync: false
+      - key: VAPID_PUBLIC_KEY
+        sync: false
+      - key: VAPID_PRIVATE_KEY
+        sync: false
       # Cloudflare R2 — llenar en el dashboard de Render:
       - key: S3_ENDPOINT
         sync: false

@@ -24,6 +24,7 @@ Una sola app (Dockerfile en la raíz: API + cliente estático) + una Postgres lo
 | `JWT_REFRESH_SECRET` | `openssl rand -hex 32` (distinto al anterior) |
 | `PLANT_TIMEZONE` | `America/Los_Angeles` (la zona operativa real vive en cada organización/planta) |
 | `FACE_PROVIDER` | `review_only` para el arranque seguro; `aws_rekognition` sólo habilita comparación 1:1 y no equivale a prueba de vida |
+| `VAPID_SUBJECT` / `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` | (opcional) las tres salidas de una identidad generada con `npx web-push generate-vapid-keys`; dejar las tres ausentes desactiva sólo Web Push |
 | `SEED_ADMIN_EMAIL` / `SEED_ADMIN_PASSWORD` | (opcional) credenciales del admin que crea el seed; si no, usa `admin@nodo.local / admin1234` — **cambiar** |
 
 ### Fotos
@@ -32,6 +33,11 @@ Producción exige almacenamiento S3-compatible duradero. Para Cloudflare R2
 define `S3_ENDPOINT`, `S3_BUCKET`, `S3_ACCESS_KEY_ID`,
 `S3_SECRET_ACCESS_KEY`, `S3_REGION=auto`. El disco local sólo está permitido en
 desarrollo y pruebas.
+
+Web Push requiere HTTPS y las tres variables `VAPID_*`. La bandeja dentro de
+la aplicación funciona aunque Web Push esté desactivado. Después del deploy,
+activa los avisos desde un gesto explícito en la campana y valida entrega en
+los teléfonos reales del admin y los foremen.
 
 ## 3. Primer deploy
 

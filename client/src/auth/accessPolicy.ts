@@ -4,6 +4,7 @@ export const PROTECTED_ROUTE_ROLES = {
   '/dashboard': ['admin', 'foreman'],
   '/attendance': ['admin', 'foreman'],
   '/employees': ['admin', 'foreman'],
+  '/exceptions': ['admin', 'foreman'],
   '/identity-reviews': ['admin', 'foreman'],
   '/reports': ['admin', 'accountant'],
   '/settings': ['admin'],

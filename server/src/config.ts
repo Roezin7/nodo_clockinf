@@ -5,10 +5,12 @@ import {
   parseFaceProvider,
 } from './services/faceProviderConfig.js';
 import { assertPhotoStorageEnvironment } from './services/storageConfig.js';
+import { parseWebPushConfig } from './services/pushConfig.js';
 
 dotenv.config();
 
 const faceProvider = parseFaceProvider(process.env.FACE_PROVIDER);
+const webPush = parseWebPushConfig(process.env);
 assertFaceProviderEnvironment(faceProvider, process.env.NODE_ENV);
 assertPhotoStorageEnvironment({
   nodeEnv: process.env.NODE_ENV,
@@ -52,4 +54,5 @@ export const config = {
       { defaultValue: 600, min: 60, max: 3600, integer: true }
     ),
   },
+  webPush,
 } as const;

@@ -17,6 +17,8 @@ import { usersRouter } from './routes/users.js';
 import { devicesRouter, organizationRouter, plantsRouter } from './routes/organization.js';
 import { manualTimeRouter } from './routes/manualTime.js';
 import { identityReviewsRouter, kioskIdentityRouter } from './routes/identity.js';
+import { operationalExceptionsRouter } from './routes/operationalExceptions.js';
+import { notificationsRouter } from './routes/notifications.js';
 import { storageIsLocal, LOCAL_DIR, verifyLocalPhotoSignature } from './storage.js';
 
 export function createApp(): express.Express {
@@ -48,6 +50,10 @@ export function createApp(): express.Express {
     '/api/auth/login',
     rateLimit({ windowMs: 60_000, limit: 10, standardHeaders: true, legacyHeaders: false })
   );
+  app.use(
+    '/api/notifications/push-subscriptions',
+    rateLimit({ windowMs: 60_000, limit: 15, standardHeaders: true, legacyHeaders: false })
+  );
 
   app.use('/api/auth', authRouter);
   app.use('/api/employees', employeesRouter);
@@ -56,6 +62,8 @@ export function createApp(): express.Express {
   app.use('/api/punches', punchesRouter);
   app.use('/api/punches/kiosk/identity', kioskIdentityRouter);
   app.use('/api/identity-reviews', identityReviewsRouter);
+  app.use('/api/operational-exceptions', operationalExceptionsRouter);
+  app.use('/api/notifications', notificationsRouter);
   app.use('/api/attendance', attendanceRouter);
   app.use('/api/assignments', assignmentsRouter);
   app.use('/api/reports', reportsRouter);

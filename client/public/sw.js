@@ -1,4 +1,4 @@
-const CACHE_NAME = 'clockai-shell-v1';
+const CACHE_NAME = 'clockai-shell-v2';
 const APP_SHELL = ['/', '/index.html', '/kiosk', '/manifest.webmanifest', '/icon.svg'];
 
 self.addEventListener('install', (event) => {
@@ -61,6 +61,36 @@ self.addEventListener('fetch', (event) => {
         }
         return response;
       });
+    })
+  );
+});
+
+// The visible text is hard-coded so an accidental sensitive server payload
+// (employee name, photo or biometric result) can never be rendered by push.
+self.addEventListener('push', (event) => {
+  event.waitUntil(
+    self.registration.showNotification('ClockAI', {
+      body: 'Hay una actualización operativa pendiente.',
+      icon: '/icon.svg',
+      badge: '/icon.svg',
+      tag: 'clockai-operational-update',
+      renotify: true,
+      data: { url: '/exceptions' },
+    })
+  );
+});
+
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+  const target = new URL('/exceptions', self.location.origin).href;
+  event.waitUntil(
+    self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clients) => {
+      const existing = clients.find((client) => new URL(client.url).origin === self.location.origin);
+      if (existing) {
+        existing.navigate(target);
+        return existing.focus();
+      }
+      return self.clients.openWindow(target);
     })
   );
 });

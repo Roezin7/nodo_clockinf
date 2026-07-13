@@ -25,6 +25,7 @@ import {
   deviceHealthReasons,
   periodHeartbeatBoundary,
 } from '../services/deviceHealth.js';
+import { deriveFinalizationBlockers } from '../services/operationalExceptions.js';
 
 export const reportsRouter = Router();
 reportsRouter.use(requireAuth, requireRole('admin', 'accountant'));
@@ -179,14 +180,15 @@ reportsRouter.post('/week/:weekStart/finalize', requireAdmin, async (req, res) =
     .object({
       reason: z.string().trim().min(3).optional(),
       override_device_health: z.boolean().default(false),
+      override_operational_blockers: z.boolean().default(false),
     })
     .strict()
     .superRefine((value, context) => {
-      if (value.override_device_health && !value.reason) {
+      if ((value.override_device_health || value.override_operational_blockers) && !value.reason) {
         context.addIssue({
           code: z.ZodIssueCode.custom,
           path: ['reason'],
-          message: 'La razón es obligatoria para ignorar la salud de dispositivos',
+          message: 'La razón es obligatoria para ignorar bloqueos de cierre',
         });
       }
     })
@@ -228,10 +230,60 @@ reportsRouter.post('/week/:weekStart/finalize', requireAdmin, async (req, res) =
         );
       }
 
+      // Re-derive from punches/manual entries while holding the same weekly
+      // lock. The reconciled inbox is a convenience projection and can lag;
+      // it is never trusted as the payroll-close gate.
+      const operationalBlockers = await deriveFinalizationBlockers(client, {
+        organizationId,
+        fromDate: period.week_start,
+        toDate: period.week_end,
+        timezone: settings.timezone,
+      });
+      if (operationalBlockers.length && !body.override_operational_blockers) {
+        throw conflict(
+          `No se puede cerrar: hay ${operationalBlockers.length} incidencia(s) operativa(s) bloqueante(s).`,
+          'operational_exception_blockers',
+          {
+            pay_period_id: period.id,
+            blockers: operationalBlockers.map((blocker) => ({
+              code: blocker.code,
+              title: blocker.title,
+              employee_id: blocker.employeeId,
+              work_date: blocker.workDate,
+              plant_ids: blocker.plantIds,
+              source_key: blocker.sourceKey,
+            })),
+          },
+        );
+      }
+      if (operationalBlockers.length) {
+        await recordAudit(
+          {
+            organizationId,
+            actorUserId: req.user!.id,
+            action: 'pay_period.operational_blockers_overridden',
+            entityType: 'pay_period',
+            entityId: period.id,
+            reason: body.reason!,
+            metadata: {
+              week_start: weekStart,
+              blockers: operationalBlockers.map((blocker) => ({
+                dedupe_key: blocker.dedupeKey,
+                code: blocker.code,
+                employee_id: blocker.employeeId,
+                work_date: blocker.workDate,
+                plant_ids: blocker.plantIds,
+              })),
+            },
+          },
+          client,
+        );
+      }
+
       // Every mutation obtains the same advisory lock, so this calculation and
       // snapshot cannot race a foreman correction.
       const computation = await computeWeek(organizationId, weekStart);
-      if (computation.anomaly_count > 0) {
+      if (computation.anomaly_count > 0 && !body.override_operational_blockers) {
         throw conflict(
           `No se puede cerrar: hay ${computation.anomaly_count} incidencia(s) bloqueante(s).`,
           'anomalies_pending'
@@ -277,7 +329,9 @@ reportsRouter.post('/week/:weekStart/finalize', requireAdmin, async (req, res) =
             version,
             snapshot_hash: hash,
             override_device_health: body.override_device_health,
+            override_operational_blockers: body.override_operational_blockers,
             device_health_blockers: deviceHealthBlockers,
+            operational_blockers: operationalBlockers.map((blocker) => blocker.dedupeKey),
           },
         },
         client
@@ -300,6 +354,20 @@ reportsRouter.post('/week/:weekStart/finalize', requireAdmin, async (req, res) =
         entityType: 'pay_period',
         entityId: details.pay_period_id,
         metadata: { week_start: weekStart, devices: details.devices },
+      });
+    }
+    if (error instanceof HttpError && error.code === 'operational_exception_blockers') {
+      const details = error.details as {
+        pay_period_id: string;
+        blockers: Array<Record<string, unknown>>;
+      };
+      await recordAudit({
+        organizationId,
+        actorUserId: req.user!.id,
+        action: 'pay_period.finalization_blocked_operational_exceptions',
+        entityType: 'pay_period',
+        entityId: details.pay_period_id,
+        metadata: { week_start: weekStart, blockers: details.blockers },
       });
     }
     throw error;

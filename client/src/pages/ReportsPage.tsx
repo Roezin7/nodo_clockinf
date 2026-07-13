@@ -12,6 +12,10 @@ import {
   type DeviceHealthConflict,
 } from '../reports/deviceHealth';
 import {
+  parseOperationalBlockerConflict,
+  type OperationalBlockerConflict,
+} from '../reports/operationalBlockers';
+import {
   Badge,
   Button,
   EmptyState,
@@ -63,6 +67,8 @@ export default function ReportsPage() {
   const [reopenError, setReopenError] = useState<string | null>(null);
   const [reopening, setReopening] = useState(false);
   const [deviceHealthConflict, setDeviceHealthConflict] = useState<DeviceHealthConflict | null>(null);
+  const [operationalConflict, setOperationalConflict] = useState<OperationalBlockerConflict | null>(null);
+  const [approvedDeviceOverride, setApprovedDeviceOverride] = useState(false);
   const [overrideReason, setOverrideReason] = useState('');
   const [overrideConfirmed, setOverrideConfirmed] = useState(false);
   const [overrideError, setOverrideError] = useState<string | null>(null);
@@ -91,21 +97,23 @@ export default function ReportsPage() {
     void load();
   }, [load]);
 
-  async function finalize(overrideDeviceHealth = false): Promise<void> {
+  async function finalize(overrides: { device?: boolean; operational?: boolean } = {}): Promise<void> {
     if (!report) return;
     setClosing(true);
     setError(null);
     try {
       await api(`/api/reports/week/${report.week_start}/finalize`, {
         method: 'POST',
-        body: JSON.stringify(
-          overrideDeviceHealth
-            ? { override_device_health: true, reason: overrideReason.trim() }
-            : {}
-        ),
+        body: JSON.stringify({
+          ...(overrides.device ? { override_device_health: true } : {}),
+          ...(overrides.operational ? { override_operational_blockers: true } : {}),
+          ...(overrides.device || overrides.operational ? { reason: overrideReason.trim() } : {}),
+        }),
       });
       setConfirming(false);
       setDeviceHealthConflict(null);
+      setOperationalConflict(null);
+      setApprovedDeviceOverride(false);
       setOverrideReason('');
       setOverrideConfirmed(false);
       setOverrideError(null);
@@ -114,12 +122,23 @@ export default function ReportsPage() {
     } catch (err) {
       setConfirming(false);
       const healthConflict = parseDeviceHealthConflict(err);
+      const blockerConflict = parseOperationalBlockerConflict(err);
       if (healthConflict && isAdmin) {
+        setOperationalConflict(null);
         setDeviceHealthConflict(healthConflict);
         setOverrideReason('');
         setOverrideConfirmed(false);
         setOverrideError(null);
-      } else if (overrideDeviceHealth) {
+      } else if (blockerConflict && isAdmin) {
+        setDeviceHealthConflict(null);
+        setOperationalConflict(blockerConflict);
+        setApprovedDeviceOverride(Boolean(overrides.device));
+        if (!overrides.device) {
+          setOverrideReason('');
+          setOverrideConfirmed(false);
+        }
+        setOverrideError(null);
+      } else if (overrides.device || overrides.operational) {
         setOverrideError(err instanceof ApiError ? err.message : 'Error al cerrar con excepción');
       } else {
         setError(err instanceof ApiError ? err.message : 'Error al cerrar la semana');
@@ -450,7 +469,7 @@ export default function ReportsPage() {
               <Button variant="secondary" onClick={() => setConfirming(false)}>
                 Cancelar
               </Button>
-              <Button variant="danger" loading={closing} onClick={() => void finalize(false)}>
+              <Button variant="danger" loading={closing} onClick={() => void finalize()}>
                 Cerrar semana
               </Button>
             </>
@@ -480,7 +499,7 @@ export default function ReportsPage() {
                 variant="danger"
                 loading={closing}
                 disabled={!canOverrideDeviceHealth({ isAdmin, confirmed: overrideConfirmed, reason: overrideReason })}
-                onClick={() => void finalize(true)}
+                onClick={() => void finalize({ device: true })}
               >
                 Cerrar con excepción
               </Button>
@@ -532,6 +551,79 @@ export default function ReportsPage() {
               <span>
                 Confirmo que revisé estos dispositivos y entiendo que cerrar ahora puede dejar fuera checadas que aún no
                 se han sincronizado.
+              </span>
+            </label>
+          </div>
+        </Modal>
+      )}
+
+      {isAdmin && operationalConflict && report && (
+        <Modal
+          title="Incidencias operativas bloqueantes"
+          size="md"
+          onClose={() => {
+            if (!closing) setOperationalConflict(null);
+          }}
+          footer={
+            <>
+              <Button variant="secondary" disabled={closing} onClick={() => setOperationalConflict(null)}>
+                Corregir antes de cerrar
+              </Button>
+              <Button
+                variant="danger"
+                loading={closing}
+                disabled={!canOverrideDeviceHealth({ isAdmin, confirmed: overrideConfirmed, reason: overrideReason })}
+                onClick={() => void finalize({
+                  device: approvedDeviceOverride,
+                  operational: true,
+                })}
+              >
+                Cerrar con excepción
+              </Button>
+            </>
+          }
+        >
+          <p className="text-14 text-ink-secondary">{operationalConflict.message}</p>
+          {operationalConflict.blockers.length > 0 ? (
+            <ul className="mt-4 max-h-64 space-y-2 overflow-auto">
+              {operationalConflict.blockers.map((blocker) => (
+                <li
+                  key={`${blocker.code}:${blocker.source_key}`}
+                  className="rounded-control border border-danger/30 bg-danger-subtle p-3 text-13"
+                >
+                  <p className="font-semibold text-ink">{blocker.title}</p>
+                  <p className="mt-1 text-ink-secondary">
+                    {blocker.work_date ?? 'Sin fecha'} · {blocker.code}
+                  </p>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="mt-3 rounded-control bg-warning-subtle p-3 text-13 text-warning">
+              Abre la bandeja de incidencias para revisar el detalle antes de continuar.
+            </p>
+          )}
+          <Link to="/exceptions" className="mt-3 inline-block text-13 font-semibold text-accent hover:underline">
+            Ir a incidencias
+          </Link>
+          <div className="mt-5">
+            <Field label="Motivo de la excepción" required error={overrideError}>
+              <Textarea
+                rows={3}
+                value={overrideReason}
+                onChange={(event) => setOverrideReason(event.target.value)}
+                placeholder="Ej.: Se validaron las horas contra evidencia externa y se corregirá el origen"
+              />
+            </Field>
+            <label className="flex items-start gap-3 rounded-control border border-danger/30 bg-danger-subtle p-3 text-13 text-ink">
+              <input
+                type="checkbox"
+                checked={overrideConfirmed}
+                onChange={(event) => setOverrideConfirmed(event.target.checked)}
+                className="mt-0.5 h-4 w-4"
+              />
+              <span>
+                Confirmo que revisé cada incidencia y entiendo que el snapshot conservará este cierre y su motivo en la auditoría.
               </span>
             </label>
           </div>

@@ -1,16 +1,13 @@
 import { query } from '../db.js';
 
-/** Zonas horarias permitidas (debe coincidir con ALLOWED_TIMEZONES de @clockai/shared). */
-export const ALLOWED_TIMEZONE_IDS = [
-  'America/New_York',
-  'America/Chicago',
-  'America/Denver',
-  'America/Phoenix',
-  'America/Los_Angeles',
-  'America/Anchorage',
-  'Pacific/Honolulu',
-  'America/Mexico_City',
-] as const;
+/** This deployment is legally and operationally fixed to Modesto, California. */
+export const ALLOWED_TIMEZONE_IDS = ['America/Los_Angeles'] as const;
+
+export function assertAllowedOperationalTimezone(value: string): void {
+  if (value !== ALLOWED_TIMEZONE_IDS[0]) {
+    throw new Error('ClockAI Modesto requires America/Los_Angeles');
+  }
+}
 
 export interface AppSettings {
   daily_ot_threshold_minutes: number;
@@ -79,6 +76,7 @@ export async function updateSettings(
 ): Promise<AppSettings> {
   const { timezone, ...storedPatch } = patch;
   if (timezone !== undefined) {
+    assertAllowedOperationalTimezone(timezone);
     await query(`UPDATE organizations SET timezone = $2 WHERE id = $1`, [organizationId, timezone]);
   }
   for (const [key, value] of Object.entries(storedPatch)) {
