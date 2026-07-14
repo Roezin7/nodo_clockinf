@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Copy, MonitorSmartphone, RefreshCw, ShieldOff, X } from 'lucide-react';
+import { Building2, Copy, MonitorSmartphone, Pencil, RefreshCw, ShieldOff, Trash2, X } from 'lucide-react';
 import type { Area, MealWindow, Plant, Settings, Shift, User, UserRole } from '@clockai/shared';
 import type { Device } from '@clockai/shared';
 import { ALLOWED_TIMEZONES } from '@clockai/shared';
@@ -28,6 +28,7 @@ export default function SettingsPage() {
       <PageHeader title="Configuración" />
       <div className="grid items-start gap-4 lg:grid-cols-2">
         <ThresholdsCard />
+        <PlantsCard />
         <DevicesCard />
         <ShiftsCard />
         <AreasCard />
@@ -65,6 +66,127 @@ function deviceHealth(device: ManagedDevice): { label: string; tone: 'success' |
 function dateTime(value: string | null): string {
   if (!value) return 'Nunca';
   return new Intl.DateTimeFormat('es-US', { dateStyle: 'short', timeStyle: 'short' }).format(new Date(value));
+}
+
+function PlantsCard() {
+  const toast = useToast();
+  const [plants, setPlants] = useState<Plant[]>([]);
+  const [code, setCode] = useState('');
+  const [name, setName] = useState('');
+  const [editing, setEditing] = useState<Plant | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function load(): Promise<void> {
+    try {
+      setPlants(await api<Plant[]>('/api/plants'));
+      setError(null);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'No fue posible cargar las plantas');
+    }
+  }
+
+  useEffect(() => { void load(); }, []);
+
+  async function create(): Promise<void> {
+    if (!code.trim() || !name.trim()) return;
+    setSaving(true);
+    setError(null);
+    try {
+      await api('/api/plants', { method: 'POST', body: JSON.stringify({ code: code.trim(), name: name.trim() }) });
+      setCode('');
+      setName('');
+      toast('Planta agregada');
+      await load();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'No fue posible agregar la planta');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function saveEdit(): Promise<void> {
+    if (!editing || !editing.code.trim() || !editing.name.trim()) return;
+    setSaving(true);
+    setError(null);
+    try {
+      await api(`/api/plants/${editing.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ code: editing.code.trim(), name: editing.name.trim(), active: editing.active }),
+      });
+      setEditing(null);
+      toast('Planta actualizada');
+      await load();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'No fue posible actualizar la planta');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function toggleActive(plant: Plant): Promise<void> {
+    setSaving(true);
+    setError(null);
+    try {
+      await api(`/api/plants/${plant.id}`, { method: 'PATCH', body: JSON.stringify({ active: !plant.active }) });
+      toast(plant.active ? 'Planta desactivada' : 'Planta activada');
+      await load();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'No fue posible actualizar la planta');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function remove(plant: Plant): Promise<void> {
+    if (!window.confirm(`¿Eliminar ${plant.name}? Sólo se elimina si no tiene usuarios, checadores ni historial.`)) return;
+    setSaving(true);
+    setError(null);
+    try {
+      await api(`/api/plants/${plant.id}`, { method: 'DELETE' });
+      toast('Planta eliminada');
+      await load();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'No fue posible eliminar la planta');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Card title="Plantas">
+      <p className="mb-4 text-13 text-ink-secondary">Administra las plantas de la operación. Desactiva una planta con historial; eliminar sólo está disponible para plantas sin relaciones.</p>
+      <div className="grid grid-cols-[100px_1fr_auto] items-end gap-3">
+        <Field label="Código" hint="Ej. P1">
+          <Input maxLength={20} placeholder="P4" value={code} onChange={(event) => setCode(event.target.value.toUpperCase())} />
+        </Field>
+        <Field label="Nombre">
+          <Input maxLength={120} placeholder="Empaque Norte" value={name} onChange={(event) => setName(event.target.value)} />
+        </Field>
+        <div className="mb-6"><Button loading={saving} disabled={!code.trim() || !name.trim()} onClick={() => void create()}>Agregar</Button></div>
+      </div>
+      {error && <p className="mb-3 text-12 font-medium text-danger" role="alert">{error}</p>}
+      <ul className="divide-y divide-line">
+        {plants.map((plant) => (
+          <li key={plant.id} className="py-3">
+            {editing?.id === plant.id ? (
+              <div className="grid grid-cols-[100px_1fr] gap-3">
+                <Field label="Código"><Input maxLength={20} value={editing.code} onChange={(event) => setEditing({ ...editing, code: event.target.value.toUpperCase() })} /></Field>
+                <Field label="Nombre"><Input maxLength={120} value={editing.name} onChange={(event) => setEditing({ ...editing, name: event.target.value })} /></Field>
+                <div className="col-span-2 flex justify-end gap-2"><Button variant="ghost" size="sm" disabled={saving} onClick={() => setEditing(null)}>Cancelar</Button><Button size="sm" loading={saving} onClick={() => void saveEdit()}>Guardar</Button></div>
+              </div>
+            ) : (
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex min-w-0 items-center gap-3"><div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-control bg-sunken text-ink-secondary"><Building2 size={18} /></div><div className="min-w-0"><p className="truncate font-medium">{plant.name}</p><p className="mt-0.5 text-12 text-ink-tertiary">Código {plant.code}</p></div><Badge tone={plant.active ? 'success' : 'neutral'}>{plant.active ? 'Activa' : 'Inactiva'}</Badge></div>
+                <div className="flex shrink-0 items-center gap-1"><Button variant="ghost" size="sm" disabled={saving} onClick={() => setEditing({ ...plant })}><Pencil size={14} /> Editar</Button><Button variant="ghost" size="sm" disabled={saving} onClick={() => void toggleActive(plant)}>{plant.active ? 'Desactivar' : 'Activar'}</Button><Button variant="ghost" size="sm" disabled={saving} onClick={() => void remove(plant)}><Trash2 size={14} /> Eliminar</Button></div>
+              </div>
+            )}
+          </li>
+        ))}
+        {!plants.length && <li className="py-5 text-center text-13 text-ink-secondary">Aún no hay plantas.</li>}
+      </ul>
+    </Card>
+  );
 }
 
 function DevicesCard() {
@@ -241,7 +363,7 @@ function DevicesCard() {
         <div>
           <p className="font-semibold text-ink">Meta operativa: dos checadores activos por planta</p>
           <p className="mt-1 text-ink-secondary">
-            {missingCount ? `Faltan ${missingCount} para cubrir las tres plantas.` : 'Cobertura completa.'}
+            {missingCount ? `Faltan ${missingCount} para cubrir las plantas activas.` : 'Cobertura completa.'}
           </p>
         </div>
         <Button variant="secondary" size="sm" loading={saving} onClick={() => void fillTwoPerPlant()}>

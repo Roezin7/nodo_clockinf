@@ -121,6 +121,69 @@ plantsRouter.patch('/:id', requireAdmin, async (req, res) => {
   res.json(row);
 });
 
+plantsRouter.delete('/:id', requireAdmin, async (req, res) => {
+  const organizationId = requireOrganization(req);
+  const plant = await queryOne<{ id: string; name: string; active: boolean }>(
+    `SELECT id, name, active FROM plants WHERE id = $1 AND organization_id = $2`,
+    [req.params.id, organizationId],
+  );
+  if (!plant) throw notFound('Planta no encontrada');
+
+  if (plant.active) {
+    const activePlants = await queryOne<{ count: string }>(
+      `SELECT count(*)::text AS count FROM plants WHERE organization_id = $1 AND active`,
+      [organizationId],
+    );
+    if (Number(activePlants!.count) <= 1) {
+      throw conflict('Debe conservar al menos una planta activa', 'last_active_plant');
+    }
+  }
+
+  const usage = await queryOne<{ source: string }>(
+    `SELECT source FROM (
+       SELECT 'usuarios asignados' AS source FROM user_plant_access WHERE plant_id = $1
+       UNION ALL SELECT 'checadas' FROM punches WHERE plant_id = $1
+       UNION ALL SELECT 'horas manuales' FROM manual_time_entries WHERE plant_id = $1
+       UNION ALL SELECT 'asignaciones de área' FROM daily_area_assignments WHERE plant_id = $1
+       UNION ALL SELECT 'checadores' FROM devices WHERE plant_id = $1
+       UNION ALL SELECT 'recibos de checador' FROM device_event_receipts WHERE plant_id = $1
+       UNION ALL SELECT 'sesiones biométricas' FROM identity_sessions WHERE plant_id = $1
+       UNION ALL SELECT 'intentos biométricos' FROM identity_attempts WHERE plant_id = $1
+       UNION ALL SELECT 'revisiones biométricas' FROM identity_review_decisions WHERE plant_id = $1
+       UNION ALL SELECT 'incidencias operativas' FROM operational_exception_plants WHERE plant_id = $1
+     ) references_found
+     LIMIT 1`,
+    [plant.id],
+  );
+  if (usage) {
+    throw conflict(
+      `No se puede eliminar ${plant.name} porque tiene ${usage.source}. Desactívala para conservar el historial.`,
+      'plant_has_history',
+      { source: usage.source },
+    );
+  }
+
+  try {
+    await withTransaction(async (client) => {
+      await client.query(`DELETE FROM plants WHERE id = $1 AND organization_id = $2`, [plant.id, organizationId]);
+      await recordAudit({
+        organizationId,
+        actorUserId: req.user!.id,
+        action: 'plant.deleted',
+        entityType: 'plant',
+        entityId: plant.id,
+        metadata: { name: plant.name },
+      }, client);
+    });
+  } catch (error) {
+    if (error && typeof error === 'object' && (error as { code?: string }).code === '23503') {
+      throw conflict('No se puede eliminar una planta con historial o relaciones activas. Desactívala en su lugar.', 'plant_has_history');
+    }
+    throw error;
+  }
+  res.status(204).end();
+});
+
 export const devicesRouter = Router();
 devicesRouter.use(requireAuth, requireRole('admin', 'foreman'));
 
