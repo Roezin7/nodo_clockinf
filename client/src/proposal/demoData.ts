@@ -7,12 +7,21 @@ export const DEMO_EMPLOYEES = Object.freeze([
   { id: 'demo-maria', number: 1088, name: 'María Soto' },
 ]);
 
-export const DEMO_ACTIONS: ReadonlyArray<{ type: PunchType; label: string }> = [
-  { type: 'shift_in', label: 'Entrada' },
-  { type: 'meal_out', label: 'Salida a comida' },
-  { type: 'meal_in', label: 'Regreso de comida' },
-  { type: 'shift_out', label: 'Salida' },
+export const DEMO_ACTIONS: ReadonlyArray<{ type: PunchType; label: string; labelEn: string }> = [
+  { type: 'shift_in', label: 'Entrada', labelEn: 'Clock in' },
+  { type: 'meal_out', label: 'Salida a comida', labelEn: 'Start meal' },
+  { type: 'meal_in', label: 'Regreso de comida', labelEn: 'End meal' },
+  { type: 'shift_out', label: 'Salida', labelEn: 'Clock out' },
 ];
+
+export function findDemoEmployeeByNumber(number: string) {
+  return DEMO_EMPLOYEES.find((employee) => String(employee.number) === number.trim());
+}
+
+export function getDemoActionLabel(type: PunchType, language: 'es' | 'en'): string {
+  const action = DEMO_ACTIONS.find((candidate) => candidate.type === type);
+  return language === 'en' ? action?.labelEn ?? type : action?.label ?? type;
+}
 
 export const WEEK_EVENTS = Object.freeze([
   ['Lunes · 5:00 AM', 'Entrada y comida', 'La estación registra entrada, salida y regreso de comida en una sola secuencia.'],

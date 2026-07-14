@@ -8,7 +8,10 @@ import {
 import type { PunchType } from '@clockai/shared';
 import type { ProposalPayload } from './types';
 import { calculateProposalTotals, usd } from './pricing';
-import { DEMO_ACTIONS, DEMO_EMPLOYEES, type LocalDemoPunch, WEEK_EVENTS } from './demoData';
+import {
+  DEMO_ACTIONS, DEMO_EMPLOYEES, findDemoEmployeeByNumber, getDemoActionLabel,
+  type LocalDemoPunch, WEEK_EVENTS,
+} from './demoData';
 import { PrintableProposal } from './print';
 
 const CAPABILITIES = [
@@ -109,22 +112,103 @@ function WeekTour() {
 }
 
 function IsolatedDemo() {
-  const [employeeId, setEmployeeId] = useState(DEMO_EMPLOYEES[0]!.id);
+  const [step, setStep] = useState<'number' | 'action' | 'confirmation'>('number');
+  const [language, setLanguage] = useState<'es' | 'en'>('es');
+  const [employeeNumber, setEmployeeNumber] = useState('');
+  const [employeeId, setEmployeeId] = useState<string | null>(null);
+  const [error, setError] = useState('');
   const [online, setOnline] = useState(true);
   const [punches, setPunches] = useState<LocalDemoPunch[]>([]);
   const [syncing, setSyncing] = useState(false);
+  const [latestPunch, setLatestPunch] = useState<LocalDemoPunch | null>(null);
+
+  const employee = DEMO_EMPLOYEES.find((candidate) => candidate.id === employeeId);
+
+  function enterDigit(digit: string): void {
+    setError('');
+    setEmployeeNumber((value) => value.length < 6 ? `${value}${digit}` : value);
+  }
+
+  function identify(): void {
+    const match = findDemoEmployeeByNumber(employeeNumber);
+    if (!match) {
+      setError(language === 'es' ? 'Número no encontrado en esta demostración.' : 'Number not found in this demo.');
+      return;
+    }
+    setEmployeeId(match.id);
+    setError('');
+    setStep('action');
+  }
+
   function punch(action: PunchType): void {
+    if (!employeeId) return;
     const next: LocalDemoPunch = { id: crypto.randomUUID(), employeeId, action, capturedAt: new Date().toISOString(), state: online ? 'synced' : 'pending' };
     setPunches((items) => [next, ...items].slice(0, 5));
+    setLatestPunch(next);
+    setStep('confirmation');
   }
+
   function reconnect(): void {
     setOnline(true); setSyncing(true);
-    window.setTimeout(() => { setPunches((items) => items.map((item) => ({ ...item, state: 'synced' }))); setSyncing(false); }, 500);
+    window.setTimeout(() => {
+      setPunches((items) => items.map((item) => ({ ...item, state: 'synced' })));
+      setLatestPunch((item) => item ? { ...item, state: 'synced' } : item);
+      setSyncing(false);
+    }, 650);
   }
+
+  function finish(): void {
+    setEmployeeNumber('');
+    setEmployeeId(null);
+    setLatestPunch(null);
+    setError('');
+    setStep('number');
+  }
+
   const pending = punches.filter((item) => item.state === 'pending').length;
   return <section id="demo" className="proposal-section proposal-demo">
-    <SectionHeading eyebrow="PRUÉBALO" title="Una estación sin datos reales"><p>Personas ficticias · memoria local · sin fotografías · se borra al recargar.</p></SectionHeading>
-    <div className="proposal-demo-shell"><header><div><strong>NODO Clock-In</strong><span>Planta Demo</span></div><span className={online ? 'online' : 'offline'}>{online ? <Wifi size={15} /> : <WifiOff size={15} />}{online ? 'En línea' : 'Sin conexión'}</span></header><div className="proposal-demo-body"><div><label htmlFor="demo-employee">Empleado de demostración</label><select id="demo-employee" value={employeeId} onChange={(event) => setEmployeeId(event.target.value)}>{DEMO_EMPLOYEES.map((employee) => <option key={employee.id} value={employee.id}>#{employee.number} · {employee.name}</option>)}</select><div className="proposal-demo-actions">{DEMO_ACTIONS.map((action) => <button key={action.type} onClick={() => punch(action.type)}>{action.label}</button>)}</div><button className="proposal-network-button" onClick={() => online ? setOnline(false) : reconnect()}>{online ? <><WifiOff size={17} /> Simular pérdida de conexión</> : <><Wifi size={17} /> Reconectar y sincronizar</>}</button></div><aside><div className="proposal-queue"><span>Cola local</span><strong>{pending}</strong><small>{syncing ? 'Sincronizando…' : pending ? 'Pendiente' : 'Sin pendientes'}</small></div>{punches.length === 0 ? <p>Selecciona una acción.</p> : <ul>{punches.map((item) => { const employee = DEMO_EMPLOYEES.find((candidate) => candidate.id === item.employeeId)!; return <li key={item.id}><span className={item.state}></span><div><strong>{employee.name}</strong><small>{DEMO_ACTIONS.find((action) => action.type === item.action)?.label}</small></div><em>{item.state === 'synced' ? 'Listo' : 'Pendiente'}</em></li>; })}</ul>}</aside></div></div>
+    <SectionHeading eyebrow="PRUÉBALO" title="Haz una checada de demostración"><p>Kiosco local con personas ficticias. No usa cámara, no envía información y se borra al recargar.</p></SectionHeading>
+    <div className="proposal-demo-shell">
+      <header>
+        <div><strong>NODO Clock-In</strong><span>Planta Demo · datos locales</span></div>
+        <div className="proposal-kiosk-toolbar">
+          <div className="proposal-language" aria-label="Idioma"><button className={language === 'es' ? 'active' : ''} onClick={() => setLanguage('es')}>ES</button><button className={language === 'en' ? 'active' : ''} onClick={() => setLanguage('en')}>EN</button></div>
+          <span className={online ? 'online' : 'offline'}>{online ? <Wifi size={15} /> : <WifiOff size={15} />}{online ? (language === 'es' ? 'En línea' : 'Online') : (language === 'es' ? 'Sin conexión' : 'Offline')}</span>
+        </div>
+      </header>
+      <div className="proposal-demo-body">
+        <div className="proposal-kiosk-screen">
+          {step === 'number' && <div className="proposal-kiosk-number">
+            <span className="proposal-demo-label">{language === 'es' ? 'IDENTIFICACIÓN' : 'IDENTIFICATION'}</span>
+            <h3>{language === 'es' ? 'Ingresa tu número' : 'Enter your number'}</h3>
+            <p>{language === 'es' ? 'Para probar usa 1042, 1071 o 1088.' : 'For this demo use 1042, 1071, or 1088.'}</p>
+            <output className="proposal-kiosk-display" aria-live="polite">{employeeNumber || '— — — —'}</output>
+            {error && <p className="proposal-kiosk-error" role="alert">{error}</p>}
+            <div className="proposal-keypad">{['1', '2', '3', '4', '5', '6', '7', '8', '9'].map((digit) => <button key={digit} onClick={() => enterDigit(digit)}>{digit}</button>)}<button className="utility" onClick={() => { setError(''); setEmployeeNumber((value) => value.slice(0, -1)); }}>{language === 'es' ? 'Borrar' : 'Delete'}</button><button onClick={() => enterDigit('0')}>0</button><button className="continue" disabled={!employeeNumber} onClick={identify}>{language === 'es' ? 'Continuar' : 'Continue'} <ChevronRight size={17} /></button></div>
+          </div>}
+
+          {step === 'action' && employee && <div className="proposal-kiosk-action-step">
+            <span className="proposal-demo-label">{language === 'es' ? 'EMPLEADO IDENTIFICADO' : 'EMPLOYEE IDENTIFIED'}</span>
+            <h3>{language === 'es' ? `Hola, ${employee.name}` : `Hello, ${employee.name}`}</h3>
+            <p>#{employee.number} · {language === 'es' ? 'Selecciona una acción' : 'Choose an action'}</p>
+            <div className="proposal-demo-actions">{DEMO_ACTIONS.map((action) => <button key={action.type} onClick={() => punch(action.type)}><Clock3 size={20} />{language === 'en' ? action.labelEn : action.label}</button>)}</div>
+            <button className="proposal-kiosk-back" onClick={finish}>{language === 'es' ? 'Cambiar empleado' : 'Change employee'}</button>
+          </div>}
+
+          {step === 'confirmation' && employee && latestPunch && <div className={`proposal-kiosk-confirmation ${latestPunch.state}`} aria-live="polite">
+            {latestPunch.state === 'synced' ? <CheckCircle2 size={54} /> : <CloudOff size={54} />}
+            <span className="proposal-demo-label">{latestPunch.state === 'synced' ? (language === 'es' ? 'REGISTRO COMPLETADO' : 'PUNCH COMPLETE') : (language === 'es' ? 'GUARDADO EN EL DISPOSITIVO' : 'SAVED ON DEVICE')}</span>
+            <h3>{getDemoActionLabel(latestPunch.action, language)}</h3>
+            <p>{employee.name} · {new Date(latestPunch.capturedAt).toLocaleTimeString(language === 'es' ? 'es-MX' : 'en-US', { hour: 'numeric', minute: '2-digit' })}</p>
+            <small>{latestPunch.state === 'synced' ? (language === 'es' ? 'Sincronizado correctamente.' : 'Synced successfully.') : (language === 'es' ? 'Se sincronizará al recuperar internet.' : 'It will sync when internet returns.')}</small>
+            <button className="proposal-kiosk-finish" onClick={finish}>{language === 'es' ? 'Terminar' : 'Finish'}</button>
+          </div>}
+
+          <button className="proposal-network-button" onClick={() => online ? setOnline(false) : reconnect()} disabled={syncing}>{online ? <><WifiOff size={17} /> {language === 'es' ? 'Simular pérdida de conexión' : 'Simulate connection loss'}</> : <><Wifi size={17} /> {syncing ? (language === 'es' ? 'Sincronizando…' : 'Syncing…') : (language === 'es' ? 'Reconectar y sincronizar' : 'Reconnect and sync')}</>}</button>
+        </div>
+        <aside><div className="proposal-queue"><span>Cola local</span><strong>{pending}</strong><small>{syncing ? 'Sincronizando…' : pending ? 'Pendiente' : 'Sin pendientes'}</small></div><h3>Actividad de prueba</h3>{punches.length === 0 ? <p>Las checadas aparecerán aquí.</p> : <ul>{punches.map((item) => { const itemEmployee = DEMO_EMPLOYEES.find((candidate) => candidate.id === item.employeeId)!; return <li key={item.id}><span className={item.state}></span><div><strong>{itemEmployee.name}</strong><small>{getDemoActionLabel(item.action, language)}</small></div><em>{item.state === 'synced' ? 'Listo' : 'Pendiente'}</em></li>; })}</ul>}<p className="proposal-demo-disclaimer"><ShieldCheck size={15} /> Demo aislada: no afecta horas reales.</p></aside>
+      </div>
+    </div>
   </section>;
 }
 
