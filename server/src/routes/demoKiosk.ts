@@ -14,13 +14,27 @@ const bodySchema = z.object({
 interface DemoOrganization { id: string; name: string; timezone: string }
 
 async function demoOrganization(): Promise<DemoOrganization> {
-  const organization = await queryOne<DemoOrganization>(
+  const configuredSlug = config.demoKioskOrganizationSlug.trim();
+  if (configuredSlug) {
+    const configured = await queryOne<DemoOrganization>(
+      `SELECT id, name, timezone FROM organizations
+       WHERE slug = $1 AND active`,
+      [configuredSlug],
+    );
+    if (configured) return configured;
+  }
+
+  // The public demo is safe to recover from a renamed/stale slug only when this
+  // deployment has a single active tenant. Multi-tenant deployments must set a
+  // matching slug explicitly, so a public route cannot expose another tenant.
+  const activeOrganizations = await query<DemoOrganization>(
     `SELECT id, name, timezone FROM organizations
-     WHERE slug = $1 AND active`,
-    [config.demoKioskOrganizationSlug],
+     WHERE active
+     ORDER BY created_at ASC
+     LIMIT 2`,
   );
-  if (!organization) throw notFound('La organización del kiosco de pruebas no está disponible');
-  return organization;
+  if (activeOrganizations.length === 1) return activeOrganizations[0]!;
+  throw notFound('La organización del kiosco de pruebas no está disponible');
 }
 
 demoKioskRouter.get('/recent', async (_req, res) => {
