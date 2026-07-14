@@ -10,12 +10,29 @@ const ACTIONS: Array<{ type: PunchType; label: string; tone: string }> = [
   { type: 'shift_out', label: 'Salida', tone: 'border-accent/60 bg-accent/15' },
 ];
 
-type Step = 'number' | 'action' | 'identity' | 'complete';
+type Step = 'number' | 'action' | 'identity' | 'complete' | 'error';
 type Result = 'verified' | 'review';
 interface DemoPunch { id: string; employee_number: number; employee_name: string; punch_type: PunchType; punched_at: string }
 
 function displayTime(iso: string, timezone: string): string {
   return new Intl.DateTimeFormat('es-US', { hour: 'numeric', minute: '2-digit', timeZone: timezone }).format(new Date(iso));
+}
+
+async function fetchWithTimeout(input: RequestInfo | URL, init: RequestInit, timeoutMs = 15_000): Promise<Response> {
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(input, { ...init, signal: controller.signal });
+  } finally {
+    window.clearTimeout(timeout);
+  }
+}
+
+function saveErrorMessage(error: unknown): string {
+  if (error instanceof Error && error.name === 'AbortError') {
+    return 'La conexión tardó demasiado. Verifica internet e intenta nuevamente.';
+  }
+  return error instanceof Error ? error.message : 'No fue posible guardar la checada de prueba';
 }
 
 export default function DemoKioskPage() {
@@ -104,7 +121,7 @@ export default function DemoKioskPage() {
     setSaving(true);
     setServerError('');
     try {
-      const response = await fetch('/api/demo-kiosk/punches', {
+      const response = await fetchWithTimeout('/api/demo-kiosk/punches', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ employee_number: Number(employeeNumber), punch_type: action.type }),
@@ -117,7 +134,8 @@ export default function DemoKioskPage() {
       setStep('complete');
       await loadRecent();
     } catch (error) {
-      setServerError(error instanceof Error ? error.message : 'No fue posible guardar la checada de prueba');
+      setServerError(saveErrorMessage(error));
+      setStep('error');
     } finally {
       setSaving(false);
     }
@@ -134,6 +152,12 @@ export default function DemoKioskPage() {
     stopCamera();
     setPhotoUrl((previous) => { if (previous) URL.revokeObjectURL(previous); return null; });
     setEmployeeNumber(''); setAction(null); setFailedAttempts(0); setCameraMessage(''); setServerError(''); setResultPunch(null); setStep('number');
+  }
+
+  function retrySave(): void {
+    setServerError('');
+    setStep('identity');
+    void startCamera();
   }
 
   return (
@@ -172,6 +196,13 @@ export default function DemoKioskPage() {
             <p className="mt-3 max-w-lg text-16 text-kiosk-ink-dim">{result === 'verified' ? 'Esta entrada aparece en la lista de pruebas, nunca en asistencia, horas, dashboard ni nómina.' : 'Tras tres fallos simulados, la prueba se etiqueta como alerta. No crea revisión ni evidencia biométrica productiva.'}</p>
             {photoUrl && <img src={photoUrl} alt="Foto local de demostración" className="mt-5 h-24 w-32 rounded-card border border-kiosk-line object-cover" />}
             <button onClick={reset} className="mt-7 inline-flex min-h-14 items-center gap-2 rounded-control bg-accent px-5 text-16 font-bold text-white"><RotateCcw size={19} /> Hacer otra prueba</button>
+          </>}
+          {step === 'error' && <>
+            <ShieldAlert size={52} className="mb-5 text-danger" strokeWidth={1.5} />
+            <h1 className="text-28 font-bold text-kiosk-ink-dim">No se registró la prueba</h1>
+            <p className="mt-3 max-w-lg text-16 text-kiosk-ink-dim">{serverError || 'Ocurrió un problema al guardar la checada de prueba.'}</p>
+            <p className="mt-3 max-w-lg text-14 text-kiosk-ink-dim">La prueba no afectó horas, asistencia ni nómina.</p>
+            <div className="mt-7 flex flex-wrap justify-center gap-3"><button onClick={retrySave} className="inline-flex min-h-14 items-center gap-2 rounded-control bg-accent px-5 text-16 font-bold text-white"><Camera size={19} /> Intentar de nuevo</button><button onClick={reset} className="inline-flex min-h-14 items-center gap-2 rounded-control border border-kiosk-line bg-kiosk-raised px-5 text-16 font-bold text-kiosk-ink"><RotateCcw size={19} /> Empezar otra prueba</button></div>
           </>}
         </section>
         <aside className="w-full rounded-card border border-kiosk-line bg-kiosk-raised p-5 text-left lg:w-80"><h2 className="font-display text-18 font-bold text-kiosk-ink">Últimas checadas de prueba</h2><p className="mt-1 text-13 text-kiosk-ink-dim">Historial de esta demostración pública.</p><div className="mt-4 max-h-[420px] space-y-3 overflow-auto">{recent.length === 0 ? <p className="text-14 text-kiosk-ink-dim">Aún no hay pruebas registradas.</p> : recent.map((punch) => <div key={punch.id} className="rounded-control border border-kiosk-line p-3"><p className="text-14 font-bold text-kiosk-ink">{punch.employee_name}</p><p className="mt-1 text-13 text-kiosk-ink-dim">#{punch.employee_number} · {ACTIONS.find((item) => item.type === punch.punch_type)?.label ?? punch.punch_type}</p><p className="mt-1 text-12 text-kiosk-ink-dim">{displayTime(punch.punched_at, timezone)}</p></div>)}</div><button onClick={() => void loadRecent()} className="mt-4 text-13 font-bold text-accent">Actualizar lista</button></aside>
