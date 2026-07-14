@@ -6,7 +6,6 @@ import {
 } from './services/faceProviderConfig.js';
 import { assertPhotoStorageEnvironment } from './services/storageConfig.js';
 import { parseWebPushConfig } from './services/pushConfig.js';
-import { parseProposalAccessCodes } from './proposals/accessCodes.js';
 
 dotenv.config();
 
@@ -70,8 +69,6 @@ export const config = {
   // The public, owner-facing demo is isolated from operational attendance.
   // Its organization is intentionally explicit to avoid exposing every tenant.
   demoKioskOrganizationSlug: process.env.DEMO_KIOSK_ORGANIZATION_SLUG ?? '',
-  // slug -> SHA-256 del código. Los códigos en texto claro nunca entran al repo.
-  proposalAccessCodes: parseProposalAccessCodes(process.env.PROPOSAL_ACCESS_CODES),
   accessTokenTtl: process.env.ACCESS_TOKEN_TTL ?? '15m',
   refreshTokenTtlDays: parseInt(process.env.REFRESH_TOKEN_TTL_DAYS ?? '30', 10),
   plantTimezone: process.env.PLANT_TIMEZONE ?? 'America/Los_Angeles',

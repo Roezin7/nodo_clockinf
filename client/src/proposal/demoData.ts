@@ -15,15 +15,11 @@ export const DEMO_ACTIONS: ReadonlyArray<{ type: PunchType; label: string }> = [
 ];
 
 export const WEEK_EVENTS = Object.freeze([
-  ['Lunes · 5:00 AM', 'Ana registra entrada', 'La estación confirma el evento.'],
-  ['Lunes · 9:00 AM', 'Salida a comida', 'La secuencia permanece abierta y visible.'],
-  ['Lunes · 9:30 AM', 'Regreso de comida', 'El descanso queda asociado a la jornada.'],
-  ['Martes', 'Luis trabaja temporalmente en Planta Norte', 'La estación determina la planta; el empleado no la elige.'],
-  ['Miércoles', 'La estación pierde internet', 'La checada se conserva cifrada en la cola local.'],
-  ['Miércoles · minutos después', 'Regresa la conexión', 'Los eventos se sincronizan en orden y sin duplicados.'],
-  ['Jueves', 'María olvida el regreso de comida', 'Se abre una incidencia revisable.'],
-  ['Viernes', 'El foreman corrige el evento', 'Debe explicar el motivo; el registro original no se borra.'],
-  ['Domingo', 'La contadora revisa el resumen', 'Se congela una versión y se exporta XLSX o CSV.'],
+  ['Lunes · 5:00 AM', 'Entrada y comida', 'La estación registra entrada, salida y regreso de comida en una sola secuencia.'],
+  ['Martes', 'Cambio temporal de planta', 'La estación asigna la planta correcta sin depender de mensajes externos.'],
+  ['Miércoles', 'Internet interrumpido', 'La checada queda en cola local y se sincroniza en orden al recuperar conexión.'],
+  ['Jueves', 'Incidencia y corrección', 'El foreman explica el motivo; el evento original permanece en auditoría.'],
+  ['Domingo', 'Cierre para la contadora', 'Se congela una versión verificable y se exporta XLSX o CSV.'],
 ] as const);
 
 export const DEMO_API_ALLOWLIST = Object.freeze(['/api/proposals/']);

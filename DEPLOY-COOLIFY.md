@@ -28,7 +28,6 @@ Una sola app (Dockerfile en la raíz: API + cliente estático) + una Postgres lo
 | `VAPID_SUBJECT` / `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` | (opcional) las tres salidas de una identidad generada con `npx web-push generate-vapid-keys`; dejar las tres ausentes desactiva sólo Web Push |
 | `CORS_ORIGINS` | vacío en producción mismo-origen; en desarrollo, p. ej. `http://localhost:5173` |
 | `DEMO_KIOSK_ORGANIZATION_SLUG` | opcional con una sola organización activa; obligatorio si hay varias. Elige la que se demostrará públicamente, p. ej. `modesto-packing` |
-| `PROPOSAL_ACCESS_CODES` | JSON secreto de `clientSlug` a hash SHA-256 del código de acceso, p. ej. `{"cliente-a":"<hash-de-64-caracteres>"}`. No usar códigos en texto claro ni commitear hashes reales. |
 
 ### Fotos
 
@@ -62,6 +61,6 @@ hay horas pagables, reportes, dashboard ni fotos biométricas productivas.
 - `render.yaml` queda solo como referencia del deploy anterior en Render; Coolify no lo usa.
 - El servidor confía en un salto de proxy (`trust proxy = 1` en `app.ts`), necesario para el rate limiting detrás del Traefik de Coolify.
 - Migraciones corren en cada arranque; son incrementales y seguras de repetir.
-- Las propuestas privadas viven en `/proposal/:clientSlug`. Consulta
+- Las propuestas comerciales por enlace viven en `/proposal/:clientSlug`. Consulta
   `docs/commercial-proposals.md` para crear una configuración, generar el hash,
   validar aislamiento e imprimir el resumen.

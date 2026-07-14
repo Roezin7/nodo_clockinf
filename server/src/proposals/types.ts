@@ -13,7 +13,7 @@ export interface ProposalConfig {
   openingMessage: string;
   commercialNotes: string[];
   taxesIncluded: boolean;
-  nod3: {
+  provider: {
     name: string;
     email: string;
     phone: string;

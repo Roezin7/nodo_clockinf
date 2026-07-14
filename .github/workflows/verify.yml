@@ -26,7 +26,6 @@ jobs:
       FACE_PROVIDER: fake
       NODE_ENV: test
       RUN_DB_INTEGRATION: '1'
-      PROPOSAL_ACCESS_CODES: '{"empacadora-demo":"d0d9484e58ab684d217fa477a0f0739c35d576fcb7b58b421c968497aaf11253"}'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

@@ -18,11 +18,11 @@ const proposals = [
       'La configuración final se valida durante descubrimiento antes de iniciar el piloto.',
     ],
     taxesIncluded: false,
-    nod3: {
+    provider: {
       name: 'Leader Solutions',
       email: 'leader@leadersolutions.com',
       phone: 'Contacto en la propuesta final',
-      website: 'https://nod3.studio',
+      website: 'https://leadersolutions.com',
     },
   },
 ] as const satisfies readonly ProposalConfig[];
@@ -40,7 +40,7 @@ export function validateProposalConfig(proposal: ProposalConfig): string[] {
   } else if (proposal.validUntil < proposal.proposalDate) {
     errors.push('vigencia anterior a la propuesta');
   }
-  if (!proposal.nod3.email.includes('@') || !proposal.nod3.name.trim()) errors.push('contacto Nod3 incompleto');
+  if (!proposal.provider.email.includes('@') || !proposal.provider.name.trim()) errors.push('contacto de proveedor incompleto');
   if (proposal.logoUrl && !/^(https:\/\/|\/)/.test(proposal.logoUrl)) errors.push('logoUrl debe ser HTTPS o relativo');
   return errors;
 }

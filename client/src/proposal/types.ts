@@ -13,7 +13,7 @@ export interface ProposalConfig {
   openingMessage: string;
   commercialNotes: string[];
   taxesIncluded: boolean;
-  nod3: { name: string; email: string; phone: string; website: string };
+  provider: { name: string; email: string; phone: string; website: string };
 }
 
 export interface ProposalPricing {
@@ -27,7 +27,6 @@ export interface ProposalPricing {
 export interface ProposalPayload {
   proposal: ProposalConfig;
   pricing: ProposalPricing;
-  consent: string;
 }
 
 export interface CommercialTotals {
@@ -39,18 +38,4 @@ export interface CommercialTotals {
   firstYearCents: number;
   secondYearCents: number;
   expansionQuoteRequired: boolean;
-}
-
-export interface AcceptanceInput {
-  legalCompanyName: string;
-  representativeName: string;
-  email: string;
-  phone: string;
-  stations: number;
-  plants: number;
-  employees: number;
-  pricingConfirmed: boolean;
-  termsAccepted: boolean;
-  signature: string;
-  requestKickoff: boolean;
 }
