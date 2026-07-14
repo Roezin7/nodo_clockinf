@@ -23,6 +23,7 @@ import { operationalExceptionsRouter } from './routes/operationalExceptions.js';
 import { notificationsRouter } from './routes/notifications.js';
 import { dashboardRouter } from './routes/dashboard.js';
 import { demoKioskRouter } from './routes/demoKiosk.js';
+import { proposalsRouter } from './routes/proposals.js';
 import { storageIsLocal, LOCAL_DIR, verifyLocalPhotoSignature } from './storage.js';
 import { storage } from './storage.js';
 import { pool } from './db.js';
@@ -130,6 +131,7 @@ export function createApp(): express.Express {
   app.use('/api/manual-time', manualTimeRouter);
   app.use('/api/dashboard', dashboardRouter);
   app.use('/api/demo-kiosk', rateLimit({ windowMs: 60_000, limit: 60, standardHeaders: true, legacyHeaders: false }), demoKioskRouter);
+  app.use('/api/proposals', rateLimit({ windowMs: 60_000, limit: 30, standardHeaders: true, legacyHeaders: false }), proposalsRouter);
 
   // Solo dev: sirve las fotos guardadas en disco local (sin R2 configurado)
   if (storageIsLocal) {

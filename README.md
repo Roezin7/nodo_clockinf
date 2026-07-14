@@ -64,3 +64,4 @@ Variables de entorno documentadas en `server/.env.example`.
 - [Hardening de producción](docs/phase-9-production-hardening.md)
 - [Aceptación, piloto y salida](docs/phase-10-acceptance-launch.md)
 - [Propuesta comercial y comparación de mercado](docs/competitive-pricing-us-2026.md)
+- [Propuestas comerciales privadas](docs/commercial-proposals.md)

@@ -1,4 +1,3 @@
-import crypto from 'node:crypto';
 import bcrypt from 'bcryptjs';
 import type { Server } from 'node:http';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -13,7 +12,6 @@ let employeeNumber = 0;
 
 describe.skipIf(!run)('demo kiosk isolation', () => {
   beforeAll(async () => {
-    const suffix = crypto.randomUUID();
     const organization = await queryOne<{ id: string }>(
       `INSERT INTO organizations (name, slug, timezone) VALUES ('Demo Integration', $1, 'America/Los_Angeles') RETURNING id`,
       [config.demoKioskOrganizationSlug],

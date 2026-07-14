@@ -227,7 +227,7 @@ async function insertDeviceReceipt(
     disposition: 'new_punch' | 'semantic_duplicate';
   }
 ): Promise<void> {
-  const inserted = await client.query<{ alias_session_id: string }>(
+  await client.query(
     `INSERT INTO device_event_receipts
        (organization_id, plant_id, device_id, client_event_id, client_installation_id,
         client_sequence, client_clock_skew_seconds,

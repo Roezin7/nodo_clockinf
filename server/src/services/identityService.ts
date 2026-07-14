@@ -398,7 +398,7 @@ export async function submitIdentityAttempt(device: AuthDevice, input: SubmitIde
     let enrollmentPhoto: Buffer | null = null;
     try {
       enrollmentPhoto = await storage.get(sessionBefore.enrollment_photo_key);
-    } catch (error) {
+    } catch {
       providerResult = {
         result: 'provider_unavailable',
         similarity: null,

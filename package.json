@@ -14,10 +14,16 @@
     "dev:client": "npm run dev --workspace=client",
     "build": "npm run build --workspace=shared && npm run build --workspace=server && npm run build --workspace=client",
     "test": "npm run test --workspace=server && npm run test --workspace=client",
+    "lint": "eslint client/src server/src shared/src",
+    "typecheck": "tsc --noEmit -p shared/tsconfig.json && tsc --noEmit -p server/tsconfig.json && tsc --noEmit -p client/tsconfig.json",
     "migrate": "npm run migrate --workspace=server",
     "seed": "npm run seed --workspace=server"
   },
   "engines": {
     "node": ">=20"
+  },
+  "devDependencies": {
+    "eslint": "^9.39.5",
+    "typescript-eslint": "^8.64.0"
   }
 }

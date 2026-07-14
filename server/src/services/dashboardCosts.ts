@@ -262,20 +262,6 @@ function addCostedPart(
   else accumulator.doubleTimeCostNumerator += numerator;
 }
 
-function mergeAccumulator(target: CostAccumulator, source: CostAccumulator): void {
-  target.regular += source.regular;
-  target.overtime15 += source.overtime15;
-  target.doubleTime += source.doubleTime;
-  target.clock += source.clock;
-  target.manual += source.manual;
-  target.costed += source.costed;
-  target.uncosted += source.uncosted;
-  target.costNumerator += source.costNumerator;
-  target.regularCostNumerator += source.regularCostNumerator;
-  target.overtimeCostNumerator += source.overtimeCostNumerator;
-  target.doubleTimeCostNumerator += source.doubleTimeCostNumerator;
-}
-
 function publicMetric(accumulator: CostAccumulator): DashboardLaborMetric {
   const total = accumulator.regular + accumulator.overtime15 + accumulator.doubleTime;
   const totalCostUnits = roundedMoneyUnits(accumulator.costNumerator);

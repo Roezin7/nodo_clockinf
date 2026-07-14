@@ -936,7 +936,7 @@ reportsRouter.get('/week/:weekStart/versions/:version/export', async (req, res) 
 });
 
 /** Live/draft exports are deliberately impossible; callers must select a version. */
-reportsRouter.get('/week/:weekStart/export', async (req, res) => {
+reportsRouter.get('/week/:weekStart/export', async (req, _res) => {
   if (!DATE_RE.test(req.params.weekStart)) throw badRequest('Fecha inválida');
   throw badRequest(
     'Selecciona una versión final explícita para exportar',

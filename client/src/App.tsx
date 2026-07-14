@@ -30,6 +30,7 @@ import StyleguidePage from './pages/StyleguidePage';
 import IdentityReviewsPage from './pages/IdentityReviewsPage';
 import ExceptionsPage from './pages/ExceptionsPage';
 import ProfilePage from './pages/ProfilePage';
+import ProposalPage from './pages/ProposalPage';
 import { NotificationsBell } from './components/NotificationsBell';
 import { canAccessRoute, landingRoute, type ProtectedRoute } from './auth/accessPolicy';
 
@@ -175,6 +176,7 @@ export default function App() {
         <Route path="/login" element={<LoginPage />} />
         <Route path="/kiosk" element={<KioskPage />} />
         <Route path="/demo/kiosk" element={<DemoKioskPage />} />
+        <Route path="/proposal/:clientSlug" element={<ProposalPage />} />
         <Route path="/" element={<RoleHome />} />
         <Route path="/dashboard" element={<RoleGuard route="/dashboard"><Shell><DashboardPage /></Shell></RoleGuard>} />
         <Route path="/employees" element={<RoleGuard route="/employees"><Shell><EmployeesPage /></Shell></RoleGuard>} />

@@ -15,7 +15,6 @@ import {
   parseOperationsDashboard,
   type AdminWeekDashboard,
   type KioskSyncStatus,
-  type LaborMetric,
   type LaborTrendPage,
   type OperationsDashboard,
 } from '../dashboard/model';
