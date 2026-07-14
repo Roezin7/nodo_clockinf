@@ -1,5 +1,5 @@
-const CACHE_NAME = 'clockai-shell-v2';
-const APP_SHELL = ['/', '/index.html', '/kiosk', '/manifest.webmanifest', '/icon.svg'];
+const CACHE_NAME = 'clockai-shell-v3';
+const APP_SHELL = ['/', '/index.html', '/kiosk', '/manifest.webmanifest', '/icon.svg', '/favicon.svg', '/apple-touch-icon.png', '/icon-192.png', '/icon-512.png'];
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
@@ -72,7 +72,7 @@ self.addEventListener('push', (event) => {
     self.registration.showNotification('ClockAI', {
       body: 'Hay una actualización operativa pendiente.',
       icon: '/icon.svg',
-      badge: '/icon.svg',
+      badge: '/favicon.svg',
       tag: 'clockai-operational-update',
       renotify: true,
       data: { url: '/exceptions' },

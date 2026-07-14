@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <title>NODO Clock-In</title>
+  <rect width="64" height="64" rx="14" fill="#171A1C"/>
+  <path d="M20 18v28l24-28v28" fill="none" stroke="#F8FAFC" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="47" cy="47" r="8" fill="#22C55E"/>
+  <path d="M47 42.8v4.6l3.1 1.8" fill="none" stroke="#171A1C" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
